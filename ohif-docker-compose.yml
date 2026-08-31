@@ -1,0 +1,45 @@
+# ohif-docker-compose.yml
+#
+# OHIF viewer + the Orthanc auth-injection proxy.
+# Full design: ../OHIF-Integration-Architecture.md
+#
+# Deployed shape - nginx-proxy-manager serves everything from ONE origin,
+# https://viewer.hospital.lan:
+#   /          -> ohif-viewer:80         (static viewer app)
+#   /dicom-web -> orthanc-cors-proxy:80  -> orthanc:8042
+#   /wado      -> orthanc-cors-proxy:80  -> orthanc:8042
+#
+# orthanc-cors-proxy is named for its original purpose, but in the current
+# same-origin design its actual job is SERVER-SIDE BASIC AUTH INJECTION. Orthanc
+# runs with ORTHANC__AUTHENTICATION_ENABLED=true and would otherwise answer 401,
+# making the browser show a native password prompt. Its CORS headers are vestigial
+# for OHIF - same-origin requests never trigger a preflight - and are retained only
+# for direct access over http://localhost:3000.
+#
+# The published ports below are for host access only. Nginx Proxy Manager connects
+# over the Docker network and must target the INTERNAL ports (both are 80, not
+# 3000/8043); using the published port yields 502 Bad Gateway.
+#
+# Run alongside the other two compose files:
+#   docker compose -f openmrs-docker-compose.yml -f orthanc-docker-compose.yml -f ohif-docker-compose.yml up -d
+
+services:
+  orthanc-cors-proxy:
+    image: nginx:alpine
+    container_name: orthanc-cors-proxy
+    restart: always
+    ports:
+      - "8043:80"
+    volumes:
+      - ./orthanc-cors-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - orthanc
+
+  ohif-viewer:
+    image: ohif/app:v3.9.2
+    container_name: ohif-viewer
+    restart: always
+    ports:
+      - "3000:80"
+    volumes:
+      - ./ohif-app-config.js:/usr/share/nginx/html/app-config.js:ro

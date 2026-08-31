@@ -26,6 +26,8 @@ services:
       - "8042:8042" # HTTP REST API / Orthanc Explorer web interface port
     environment:
       # Orthanc core configuration via environment variables [12]
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      STONE_WEB_VIEWER_PLUGIN_ENABLED: "true"
       ORTHANC__NAME: "OpenMRS_Orthanc_PACS"
       ORTHANC__DICOM_AET: "ORTHANC" # Default AETitle for Orthanc [18]
       ORTHANC__REMOTE_ACCESS_ALLOWED: "true" # Allow web access from outside container (e.g., from OpenMRS container or host)
