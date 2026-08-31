@@ -1,158 +1,347 @@
-# openmrs-orthanc-solution
+# openmrs-orthanc-integration
 
-A complete solution for integrating OpenMRS (EHR) and Orthanc (PACS) using Docker Compose to manage and view medical images.
+OpenMRS (EHR) + Orthanc (PACS) + OHIF (advanced DICOM viewer), deployed with Docker
+Compose behind Nginx Proxy Manager over HTTPS.
+
+Neurosurgery department, **CHU Blida**.
+
+> **This README documents the system as actually deployed**, not a generic tutorial.
+> Where a step differs from upstream OpenMRS/Orthanc guides, the difference is
+> deliberate and explained.
 
 ## Table of Contents
 
 - [Introduction](#introduction)
+- [Architecture at a glance](#architecture-at-a-glance)
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
 - [Configuration Details](#configuration-details)
 - [Usage](#usage)
+- [Operations and troubleshooting](#operations-and-troubleshooting)
+- [Security notes](#security-notes)
 
 ## Introduction
 
-This repository provides a robust and reproducible setup for a PACS-EHR integration using Docker Compose. The solution deploys OpenMRS, a leading open-source electronic health record system, alongside Orthanc, a lightweight and powerful DICOM server. The two systems are linked via the OpenMRS Imaging Module, allowing you to manage and view patient-associated DICOM images directly from the OpenMRS patient dashboard.
+Clinicians open a patient in OpenMRS, see that patient's imaging studies, and open them
+in a DICOM viewer without re-authenticating. Three viewers are reachable:
+
+| Viewer | Served by | Use |
+| --- | --- | --- |
+| **Stone Web Viewer** | Orthanc | fast 2D review |
+| **Orthanc Explorer 2** | Orthanc | raw DICOM administration |
+| **OHIF** | its own container | MPR, volume rendering, segmentation |
+
+The OpenMRS side is a customised **imaging module** (`custom-imaging-openmrs/`), which
+associates OpenMRS patients with Orthanc studies and renders the viewer links.
+
+**For the OHIF viewer chain — TLS, routing, and how authentication is injected — read
+[`OHIF-Integration-Architecture.md`](OHIF-Integration-Architecture.md).** It is the
+authoritative reference for that part of the system, and this README does not duplicate it.
+
+## Architecture at a glance
+
+Eight containers on one Docker network, `openmrs-orthanc-integration_default`:
+
+| Container | Image | Host port | **Internal port** | Compose file |
+| --- | --- | --- | --- | --- |
+| `openmrs-app` | `openmrs/openmrs-reference-application-distro` | 8080 | 8080 | `openmrs-docker-compose.yml` |
+| `openmrs-mysql` | `mysql:8.0` | — | 3306 | `openmrs-docker-compose.yml` |
+| `orthanc-pacs` | `orthancteam/orthanc` | 4242, 8042 | 4242, 8042 | `orthanc-docker-compose.yml` |
+| `orthanc-postgres-db` | `postgres:13-alpine` | — | 5432 | `orthanc-docker-compose.yml` |
+| `ohif-viewer` | `ohif/app:v3.9.2` | 3000 | **80** | `ohif-docker-compose.yml` |
+| `orthanc-cors-proxy` | `nginx:alpine` | 8043 | **80** | `ohif-docker-compose.yml` |
+| `nginx-proxy-manager-app-1` | `jc21/nginx-proxy-manager` | 80, 81, 443 | — | `~/nginx-proxy-manager/` |
+| `medreport-rgs` | `report-generation-service` | — | 8300 | `~/report-generation-service/` |
+
+> **The single most common mistake in this stack:** configuring a reverse proxy with the
+> *host-published* port instead of the *internal* one. NPM connects over the Docker
+> network, so `ohif-viewer` is port **80** (not 3000) and `orthanc-cors-proxy` is port
+> **80** (not 8043). The published port gives `502 Bad Gateway`.
+
+Public hostnames, all terminating TLS at NPM:
+
+| Hostname | NPM host | Forwards to |
+| --- | --- | --- |
+| `openmrs.hospital.lan` | 1 | `openmrs-app:8080` |
+| `orthanc.hospital.lan` | 2 | `orthanc-pacs:8042` |
+| `viewer.hospital.lan` | 3 | `/` → `ohif-viewer:80`, `/dicom-web` and `/wado` → `orthanc-cors-proxy:80` |
+
+Note that **only host 3 routes through `orthanc-cors-proxy`**. Host 2 goes straight to
+Orthanc, which is why the Stone Viewer and Orthanc Explorer still produce a password
+prompt while OHIF does not.
 
 ## Features
 
-- **Docker-based Deployment:** All services run in isolated Docker containers, ensuring consistency and ease of setup on any host with Docker.
-- **OpenMRS Reference Application:** A fully functional OpenMRS instance with a MySQL database.
-- **Orthanc PACS Server:** An Orthanc instance with a PostgreSQL backend for efficient DICOM storage and indexing.
-- **Pre-configured Integration:** The setup includes the necessary modules and configuration to link OpenMRS and Orthanc.
-- **ARM64 Architecture Support:** The provided Docker images are compatible with Apple Silicon (M1/M2/M3) and other ARM64 systems.
+- **Docker-based deployment** — every service isolated and reproducible.
+- **OpenMRS Reference Application** with MySQL.
+- **Orthanc PACS** with a PostgreSQL index and storage backend.
+- **Customised imaging module** (1.2.0) linking OpenMRS patients to Orthanc studies.
+- **OHIF v3.9.2** for MPR, volume rendering and segmentation.
+- **HTTPS everywhere** via Nginx Proxy Manager with a private CA certificate.
+- **No credentials in the browser** — Orthanc authentication is injected server-side.
+- **DICOM worklist** support, so modalities can query scheduled procedures.
 
 ## Prerequisites
 
-Before you begin, ensure you have the following software installed:
-
-- **Docker Desktop:** The official Docker application for your operating system (Windows, macOS, or Linux).
-- **Git:** For cloning this repository.
+- **Docker** and the Compose plugin.
+- **Git**.
+- For building the imaging module: **Java 8** and **Maven 3.8+**
+  (this host has OpenJDK 1.8.0_502 and Maven 3.8.7).
+- An **internal DNS server** able to serve `*.hospital.lan` records, or hosts-file entries
+  on each client machine.
+- The hospital **CA certificate** (`certificates/hospitalCA.crt`) installed as trusted on
+  every client that will open the viewers.
 
 ## Project Structure
 
 ```
-.
-├── openmrs-module-imaging/
-├── .gitignore
-├── .gitmodules
-├── openmrs-docker-compose.yml
-├── orthanc-docker-compose.yml
+openmrs-orthanc-integration/
+├── custom-imaging-openmrs/          # the customised OpenMRS imaging module (1.2.0)
+├── backup files/                    # timestamped backups of config files
+├── module-backups/                  # timestamped backups of module source
+├── openmrs-docker-compose.yml       # OpenMRS + MySQL
+├── orthanc-docker-compose.yml       # Orthanc + PostgreSQL
+├── ohif-docker-compose.yml          # OHIF viewer + orthanc-cors-proxy
+├── ohif-app-config.js               # OHIF runtime config (bind-mounted into ohif-viewer)
+├── orthanc-cors-proxy.conf          # nginx config (bind-mounted into orthanc-cors-proxy)
+├── .env                             # secrets not committed (MEDREPORT_RGS_TOKEN)
+├── OHIF-Integration-Architecture.md # OHIF chain: TLS, routing, authentication
+├── CLAUDE.md                        # working guidelines + project-specific hazards
 └── README.md
 ```
 
-- `openmrs-docker-compose.yml`: The file to orchestrate the OpenMRS application and its MySQL database.
-- `orthanc-docker-compose.yml`: The file to orchestrate the Orthanc PACS server and its PostgreSQL database.
-- `openmrs-module-imaging/`: A directory containing the OpenMRS Imaging Module's files.
+Related directories **outside** this repository:
+
+| Path | Contents |
+| --- | --- |
+| `~/nginx-proxy-manager/` | NPM compose file plus `data/` (its SQLite DB, generated nginx configs, certificates, logs) |
+| `~/certificates/` | the hospital CA and the server certificate/key |
+| `~/report-generation-service/` | the `medreport-rgs` service |
+
+> **Almost none of the operational configuration is in git.** `origin/main` contains only
+> a README and an old submodule pointer. `ohif-app-config.js`, `orthanc-cors-proxy.conf`
+> and the compose files exist **only on this disk**, so `git checkout <file>` is *not* a
+> rollback path — use the timestamped copies in `backup files/`. See `CLAUDE.md`.
 
 ## Getting Started
 
-Follow these steps to get the OpenMRS and Orthanc solution up and running.
+### 1. Clone
 
-1.  **Clone the Repository:**
+```bash
+git clone https://github.com/bouzenaali/openmrs-orthanc-integration
+cd openmrs-orthanc-integration
+```
 
-    ```bash
-    git clone https://github.com/bouzenaali/openmrs-orthanc-integration
-    cd openmrs-orthanc-integration
-    ```
+### 2. Create `.env`
 
-    **Clone the Repository (including submodules):**
+Not committed. At minimum it needs `MEDREPORT_RGS_TOKEN`. Orthanc and database
+credentials currently live in the compose files — see [Security notes](#security-notes).
 
-    ```bash
-    git clone --recursive https://github.com/bouzenaali/openmrs-orthanc-integration.git
-    cd openmrs-orthanc-integration
-    ```
+### 3. Start the stack
 
-    > **Note:** If you already cloned the repository without the `--recursive` option, initialize and fetch the submodules by running:
+There is **no single `docker-compose.yml`**. Pass all three files together, so they share
+one project name and therefore one network:
 
-    ```bash
-    git submodule update --init --recursive
-    ```
+```bash
+docker compose -f openmrs-docker-compose.yml -f orthanc-docker-compose.yml -f ohif-docker-compose.yml up -d
+```
 
-2.  **Start the Containers:**
-    This command will build the images and start all the services in the background.
+Wait for `openmrs-mysql` and `orthanc-postgres-db` to report `healthy`. OpenMRS itself
+takes 1–3 minutes to finish starting.
 
-    ```bash
-    docker compose -f openmrs-docker-compose.yml -f orthanc-docker-compose.yml up -d
-    ```
+### 4. Start Nginx Proxy Manager and attach it to the app network
 
-    _Wait a few minutes for all services to become healthy before proceeding._
+```bash
+cd ~/nginx-proxy-manager && docker compose up -d
+```
 
-3.  **Initial OpenMRS Setup:**
-    Open your web browser and navigate to the OpenMRS installation wizard.
+**NPM must join the application network to resolve the app containers by name.** Its
+compose file does not declare this, so it must be done explicitly:
 
-    ```bash
-    http://localhost:8080/openmrs
-    ```
+```bash
+docker network connect openmrs-orthanc-integration_default nginx-proxy-manager-app-1
+```
 
-    Default credentials : '`admin`' : '`Admin123`'
+> **Recreating the NPM container drops that attachment**, and every proxy host then
+> returns `502`. Re-run the command above, or add the network to NPM's compose file as
+> `external: true` to make it durable.
 
-    Follow the on-screen instructions to complete the setup. Use the default values, but be sure to connect to the `openmrs-db` container.
+### 5. Install the OpenMRS modules
 
-4.  **Install Required Modules:**
-    - Download the **`webservices.rest-2.48.0.omod`** from [modules.openmrs.org](https://modules.openmrs.org/) (search _Rest Web Services OMOD_).
-    - Navigate to **Administration > Manage Modules** in OpenMRS.
-    - Click "Upload Module," select the downloaded file, and install it.
-    - Similarly, download and install the **`openmrs-module-imaging`** module from its source (found in the repo , use `mvn clean install` with _Maven 3.9.16 and JDK 8_).
+Via **Administration → Manage Modules → Add or Upgrade Module**:
 
-5.  **Configure OpenMRS-Orthanc Integration:**
-    - After installing the modules, go to the module settings (or global properties) for the Imaging Module.
-    - Fill in the configuration details as follows:
-      - **ID:** `OpenMRS_Orthanc_PACS`
-      - **URL:** `http://orthanc-app:8042`
-      - **USERNAME:** `orthanc`
-      - **PASSWORD:** `orthanc_admin_password`
-      - **PROXY_URL:** (Leave this field blank)
+- `webservices.rest` (2.48.0) from [modules.openmrs.org](https://modules.openmrs.org/)
+- the imaging module — build it from `custom-imaging-openmrs/`:
+
+```bash
+cd custom-imaging-openmrs && mvn clean package -DskipTests
+```
+
+The artifact lands at `omod/target/imaging-1.2.0.omod`.
+
+### 6. Configure
+
+See [Configuration Details](#configuration-details) — three separate settings are
+required, in three different places.
 
 ## Configuration Details
 
-This section outlines the key configuration settings in your `docker-compose` and `orthanc.json` files.
+### Orthanc
 
-### `orthanc-docker-compose.yml` Environment
+Configured **entirely by environment variables** in `orthanc-docker-compose.yml`. There is
+no `orthanc.json` in this deployment; do not add one expecting it to be read.
 
-- **Authentication:** Orthanc is configured with HTTP authentication enabled via environment variables:
-  ```yaml
-  environment:
-    ORTHANC__AUTHENTICATION_ENABLED: "true"
-    ORTHANC__REGISTERED_USERS: '{"orthanc": "orthanc_admin_password"}'
-  orthanc.json
-  ```
-
-**Plugins**: The Plugins field is set to an empty array to avoid deployment errors:
-
-```JSON
-"Plugins": [],
+```yaml
+ORTHANC__AUTHENTICATION_ENABLED: "true"
+ORTHANC__REMOTE_ACCESS_ALLOWED:  "true"
+ORTHANC__REGISTERED_USERS:       '{"<user>": "<password>"}'
+ORTHANC__POSTGRESQL__ENABLE_INDEX:   "true"
+ORTHANC__POSTGRESQL__ENABLE_STORAGE: "true"
+ORTHANC__POSTGRESQL__HOST:           orthanc-db
 ```
 
-PostgreSQL: Orthanc is configured to use the orthanc-db container for its data:
+Plugins loaded: `dicom-web`, `stone-webviewer`, `orthanc-explorer-2`, `gdcm`,
+`postgresql-index`, `postgresql-storage`.
 
-```JSON
-"PostgreSQL": {
-  "EnableIndex": true,
-  "EnableStorage": true,
-  "Host": "orthanc-db",
-  "Database": "orthanc"
-}
+The Compose **service** is named `orthanc` while the **container** is `orthanc-pacs`.
+Other containers reach it as `http://orthanc:8042` — the service name, not the container
+name.
+
+### The imaging module — two Orthanc URLs, and they are different
+
+At **Administration → Configuring the Orthanc server** (stored in the
+`imaging_OrthancConfiguration` table):
+
+| Field | Value | Used by |
+| --- | --- | --- |
+| **URL** (`orthancBaseUrl`) | `http://orthanc:8042` | **OpenMRS server-side**: uploads, the `/changes` poller, study queries |
+| **Proxy URL** (`orthancProxyUrl`) | `https://orthanc.hospital.lan` | **Browser links**: Stone Viewer and Orthanc Explorer |
+| Username / Password | Orthanc credentials | server-side authentication |
+
+> **Do not set the URL field to a `hospital.lan` hostname.** The container cannot resolve
+> it (its DNS is Docker's internal resolver), so uploads and study syncing would break.
+> The internal Docker address and the public browser address are deliberately different.
+
+### The OHIF link
+
+A **global property**, at **Administration → Maintenance → Settings → Imaging**:
+
 ```
+imaging.ohifBaseUrl = https://viewer.hospital.lan
+```
+
+No trailing slash and no surrounding whitespace. **When empty, the OHIF button does not
+render** — deliberate, so the module degrades cleanly where OHIF is not deployed. Set it
+through the UI, not by SQL: OpenMRS caches global properties in memory, and a direct
+`UPDATE` leaves the running application serving the old value.
+
+This is a global property, **not** a field on the Orthanc configuration page.
+
+### Nginx Proxy Manager
+
+Web UI at `http://<server-ip>:81`. Create one proxy host per hostname, always targeting
+**internal** ports (see the table in
+[Architecture at a glance](#architecture-at-a-glance)).
+
+Host 3 (`viewer.hospital.lan`) additionally needs two **Custom Locations**, `/dicom-web`
+and `/wado`, both forwarding to `orthanc-cors-proxy` port `80`. That is what makes OHIF
+same-origin with its data. Full rationale in
+[`OHIF-Integration-Architecture.md`](OHIF-Integration-Architecture.md).
+
+> **Certificates:** `hospital.lan` is an internal domain, so **Let's Encrypt cannot issue
+> for it** — do not attempt the automated flow. This deployment uses a certificate signed
+> by the hospital's own CA, uploaded to NPM as a Custom Certificate (`npm-3`), covering
+> `openmrs.hospital.lan`, `orthanc.hospital.lan` and `viewer.hospital.lan`, valid to 2036.
+
+### DNS
+
+`*.hospital.lan` must resolve to the server's LAN address **on client machines**. The
+server itself uses an external resolver and cannot resolve these names — that is expected,
+does not affect the containers, and should not be "fixed".
 
 ## Usage
 
-To test the integration, follow these steps:
+1. **Send a DICOM study** to Orthanc — AE Title `ORTHANC`, port `4242`.
+2. **Sync in OpenMRS** — open a patient, go to the imaging section, click **Get studies**.
+   This queries Orthanc and reconciles the local list.
+3. **Assign the study** to the patient with the checkbox.
+4. **Open a viewer** from the studies table: Stone Viewer, **OHIF**, or Orthanc Explorer.
 
-1.  **Access Dashboards:**
-    - OpenMRS: `http://localhost:8080/openmrs`
-    - Orthanc Explorer: `http://localhost:8042`
+### Dashboards
 
-2.  **Send a DICOM Image:**
-    - Use a DICOM client or `storescu` to send a test image to Orthanc. The DICOM AE Title is `ORTHANC`, and the address is `localhost:4242`.
-    - **Important:** Ensure the DICOM Patient ID `(0010,0020)` in the image matches the OpenMRS ID of a patient you create.
+| | URL |
+| --- | --- |
+| OpenMRS | `https://openmrs.hospital.lan` (or `http://localhost:8080/openmrs`) |
+| Orthanc Explorer | `https://orthanc.hospital.lan` (or `http://localhost:8042`) |
+| OHIF | `https://viewer.hospital.lan` |
+| Nginx Proxy Manager | `http://<server-ip>:81` |
 
-3.  **View Image in OpenMRS:**
-    - In OpenMRS, navigate to the patient dashboard for the patient linked to the DICOM image.
-    - The Imaging Module should now display the study, allowing you to view the images from Orthanc.
+## Operations and troubleshooting
 
-### Phase 2: Deployment and Security
+### Verification
 
-This phase is about securing your applications with a reverse proxy and deploying the solution. A **reverse proxy** acts as an intermediary, sitting in front of your applications to handle requests. This allows you to centralize security, enabling HTTPS encryption and preventing direct access to your application containers.
+```bash
+# every container up?
+docker compose -f openmrs-docker-compose.yml -f orthanc-docker-compose.yml -f ohif-docker-compose.yml ps
+
+# OHIF shell -> 200 text/html ; DICOMweb -> 200 application/dicom+json
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' -k https://viewer.hospital.lan/
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' -k 'https://viewer.hospital.lan/dicom-web/studies?limit=1'
+```
+
+Add `--resolve viewer.hospital.lan:443:<server-ip>` to test before a DNS record exists.
+
+### Logs
+
+| What | Where |
+| --- | --- |
+| OpenMRS | `docker logs openmrs-app` |
+| What a browser actually requested | `~/nginx-proxy-manager/data/logs/proxy-host-<n>_access.log` |
+| Generated proxy configs | `~/nginx-proxy-manager/data/nginx/proxy_host/<n>.conf` |
+
+The NPM access log is the authoritative record when a viewer misbehaves — it shows each
+request and its status, which separates a networking fault from a rendering one.
+
+### Common failures
+
+| Symptom | Cause |
+| --- | --- |
+| `502 Bad Gateway` from a proxy host | Forward port set to the published port instead of the internal one; or NPM was recreated and lost its network attachment (§ Getting Started step 4). |
+| Native **password prompt** in OHIF | The auth-injection proxy has been bypassed. Typing the password and seeing images is **not** a passing test. Verify in a private window — cached credentials mask this. |
+| `403` on DICOMweb URLs | NPM's "Block Common Exploits" rejects some DICOMweb paths. Disable that toggle on the host. |
+| Studies deleted from Orthanc still listed | Fixed in module 1.2.0. Run **Get studies** to reconcile — Orthanc's change log contains no deletion events, so only a full fetch prunes them. |
+| OHIF loads the study but shows no images | Client-side rendering. OHIF needs **WebGL2**. On a server with no GPU, recent Chrome disables the software fallback — launch with `--enable-unsafe-swiftshader`, or use a workstation with a GPU. |
+| Saving a segmentation fails | `orthanc-cors-proxy` is stock `nginx:alpine` with a 1 MB `client_max_body_size`. Add `client_max_body_size 0;` to `orthanc-cors-proxy.conf`. |
+| Certificate warning in the browser | The hospital CA is not trusted on that client. Install `certificates/hospitalCA.crt`. |
+| Random `500`s after the stack idles for days | Stale pooled DB connections (c3p0 has no validation configured, MySQL closes idle connections after 8 h). `docker restart openmrs-app`. |
+
+### Editing bind-mounted files — the inode trap
+
+`ohif-app-config.js` and `orthanc-cors-proxy.conf` are **single-file bind mounts**. Docker
+binds the *inode*, not the path. `sed -i` and most editors write a new file and rename over
+the old one, leaving the container serving the **old** content. Always truncate in place:
+
+```bash
+cp orthanc-cors-proxy.conf "backup files/orthanc-cors-proxy.conf.bak-$(date +%Y%m%d-%H%M%S)"
+cat new-version.conf > orthanc-cors-proxy.conf
+docker exec orthanc-cors-proxy nginx -t && docker exec orthanc-cors-proxy nginx -s reload
+```
+
+## Security notes
+
+- **Credentials are currently in the compose files, not `.env`.** `orthanc-docker-compose.yml`
+  carries `ORTHANC__REGISTERED_USERS` and the PostgreSQL password inline;
+  `openmrs-docker-compose.yml` carries the MySQL password. Moving them to `.env` and
+  rotating them is outstanding work. Do not copy these values into documentation.
+- **Access to `viewer.hospital.lan` is access to Orthanc.** The proxy authenticates on the
+  caller's behalf, so anyone who can reach that host has authenticated access to the whole
+  DICOMweb API, including deletion. Control is **network-level**, not password-level.
+  Restrict who can reach the host accordingly.
+- **The OHIF config no longer contains credentials.** Before module 1.2.0 the Orthanc
+  password sat in `ohif-app-config.js`, downloadable by anyone loading the viewer. It has
+  been removed; do not reintroduce a `requestOptions.auth` block.
+- **Private CA.** Certificates are signed by the hospital's own CA. Clients must trust
+  `hospitalCA.crt`, and the CA private key in `~/certificates/` must stay protected.
+- **NPM defaults.** Change the default `admin@example.com` / `changeme` login on first use.

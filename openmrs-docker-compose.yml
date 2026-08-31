@@ -33,9 +33,17 @@ services:
       DB_CREATE_TABLES: 'true' # Set to true for initial setup to create database schema
       DB_AUTO_UPDATE: 'true'   # Set to true for initial setup to apply database migrations
       MODULE_WEB_ADMIN: 'true' # Ensures the module administration UI is available
+      TZ: Africa/Algiers
+      JAVA_OPTS: -Duser.timezone=Africa/Algiers
+    volumes:
+      - openmrs_data:/usr/local/tomcat/.OpenMRS
+      - /home/server/openmrs-persistent/java/cacerts:/etc/ssl/certs/java/cacerts
     depends_on:
       openmrs-mysql:
         condition: service_healthy # Ensures OpenMRS starts only after MySQL is healthy
 
 volumes:
   openmrs_mysql_data: # Define the named volume for MySQL data persistence
+  openmrs_data:
+    external: true
+    name: openmrs-orthanc-integration_openmrs_data
