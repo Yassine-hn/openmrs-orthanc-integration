@@ -1,2 +1,14 @@
 data
 insert.py
+
+# secrets — never commit live credentials
+.env
+
+# nested repos with their own git history and remote — managed separately,
+# not as submodules of this repo (see HANDOFF-2026-08-30.md and CLAUDE.md)
+/custom-imaging-openmrs/
+/neuro-patientview/
+/modules/openmrs-module-spa/
+
+# Maven build output
+**/target/
