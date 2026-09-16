@@ -25,5 +25,17 @@ public enum SkipReason {
 	 * An appointment block already covers this time. Existing blocks always win; we never shadow or
 	 * duplicate work someone entered by hand.
 	 */
-	OVERLAPS_EXISTING
+	OVERLAPS_EXISTING;
+	
+	/**
+	 * Whether a skip of this kind is worth listing date by date. Only two are. A holiday clash and
+	 * a collision with an existing block each concern one specific day and may need someone to do
+	 * something about that day. The rest say the same thing about every date they touch --
+	 * "the template ends in December", "you asked for dates in the past" -- so enumerating them
+	 * buries the two that matter. A year's generation can produce hundreds of identical
+	 * out-of-validity rows.
+	 */
+	public boolean warrantsItsOwnRow() {
+		return this == EXCEPTION || this == OVERLAPS_EXISTING;
+	}
 }

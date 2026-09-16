@@ -62,3 +62,9 @@
     background: none; border: none; padding: 0; color: #1f6fb2;
     cursor: pointer; text-decoration: underline; font-size: inherit;
 }
+
+/* Bulk skip reasons: one sentence each, so the handful of dates that actually need
+   a decision are not buried under hundreds of identical rows. */
+.chu-skip-summary { margin: 0.4em 0 1em; padding-left: 1.2em; color: #5a6570; }
+.chu-skip-summary li { margin: 0.25em 0; }
+.chu-table-scroll { overflow-x: auto; }

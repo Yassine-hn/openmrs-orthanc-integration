@@ -63,6 +63,34 @@ public class GenerationReport {
 		return occurrences.size() - getCreatedCount();
 	}
 	
+	/**
+	 * Skips a person may need to act on, listed individually: holiday and leave clashes, and
+	 * collisions with blocks that already exist.
+	 */
+	public List<PlannedOccurrence> getSkippedNeedingAttention() {
+		List<PlannedOccurrence> out = new ArrayList<PlannedOccurrence>();
+		for (PlannedOccurrence o : occurrences) {
+			if (!o.isIncluded() && o.getSkipReason().warrantsItsOwnRow()) {
+				out.add(o);
+			}
+		}
+		return out;
+	}
+	
+	/**
+	 * Counts of the bulk skips, to be shown as one line each rather than one row per date.
+	 */
+	public Map<SkipReason, Integer> getBulkSkipCounts() {
+		Map<SkipReason, Integer> counts = new EnumMap<SkipReason, Integer>(SkipReason.class);
+		for (PlannedOccurrence o : occurrences) {
+			if (!o.isIncluded() && !o.getSkipReason().warrantsItsOwnRow()) {
+				Integer n = counts.get(o.getSkipReason());
+				counts.put(o.getSkipReason(), n == null ? 1 : n + 1);
+			}
+		}
+		return counts;
+	}
+	
 	public Map<SkipReason, Integer> getSkipCounts() {
 		Map<SkipReason, Integer> counts = new EnumMap<SkipReason, Integer>(SkipReason.class);
 		for (PlannedOccurrence o : occurrences) {
