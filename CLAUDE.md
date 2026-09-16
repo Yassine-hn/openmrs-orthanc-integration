@@ -77,6 +77,11 @@ failure. See `README.md` and `OHIF-Integration-Architecture.md` for the system i
 - `custom-imaging-openmrs/` — OpenMRS↔Orthanc imaging module (was a git submodule, now a
   plain directory; see the Git section below).
 - `neuro-patientview/` — patient-view module, its own git repo.
+- `chuschedules/` — recurring provider schedules (`Horaires récurrents`). Generates
+  appointment blocks from weekly/monthly templates. Its `README.md` and
+  `Recurring-Schedules-Design.md` carry the traps; **run `chuschedules/validate-xml.sh`
+  before deploying it** — a malformed XML file in a module takes down the whole OpenMRS web
+  context, not just that module.
 - `modules/` — other OpenMRS custom modules built/maintained alongside this project:
   - `agentgateway/` — current source (`omod`/`api`), plus `agentgateway-module-backups/`
     for its built `.omod` history.

@@ -32,6 +32,15 @@
         <description>Create and generate recurring provider schedules</description>
     </privilege>
 
+    <globalProperty>
+        <property>chuschedules.rollingHorizonDays</property>
+        <defaultValue>365</defaultValue>
+        <description>
+            How many days ahead the nightly rolling generation keeps the calendar filled.
+            Clamped to 365; the task does nothing unless it is started in the scheduler.
+        </description>
+    </globalProperty>
+
     <mappingFiles>
         ScheduleTemplate.hbm.xml
         ScheduleTemplateRange.hbm.xml

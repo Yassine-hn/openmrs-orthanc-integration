@@ -1,7 +1,7 @@
 # Recurring provider schedules — design
 
 **Project:** openmrs-orthanc-integration — Neurosurgery EMR, CHU Blida
-**Status:** **phase 1 + 2 built and deployed 2026-09-16** as `chuschedules` 1.0.0
+**Status:** **phases 1, 2 and 3 built and deployed 2026-09-16** as `chuschedules` 1.0.0
 (source in `chuschedules/`, artifacts in `module-backups/chuschedules/`). The §2 facts were
 re-verified against the deployed binaries on 2026-09-16 and still hold; they were also
 checked against `appointmentscheduling`/`appointmentschedulingui` **2.0.0**, which add no
@@ -283,7 +283,7 @@ Each phase is independently verifiable and independently deployable.
 | --- | --- | --- |
 | **1** | Liquibase, entities, DAO, service, generator, `generate` + template/exception REST, privilege | Unit tests for every §6 invariant (the generator is pure logic and needs no server). Then a dry run against production data whose report is checked by eye — **no writes**. |
 | **2** | The "Horaires récurrents" page, preview-then-generate | One real template for one provider, generated over one month, compared against the calendar. Blocks must be indistinguishable from hand-made ones and bookable. |
-| **3** | Nightly rolling-horizon task (90 days, configurable), exceptions screen, generation log view | The task's report for several consecutive nights, plus a deliberate re-run proving idempotency. |
+| **3** | Nightly rolling-horizon task (365 days, configurable), exceptions screen | **Done 2026-09-16.** The task was registered stopped, given a start time, started manually, and observed to run: 55 → 143 blocks, topping up the one template that needed it and creating nothing for the template already generated to its horizon. Both booked appointments survived and no duplicate `(range_id, target_date)` key was produced. |
 
 Deployment follows the existing protocol: one change at a time, `.omod` archived under
 `module-backups/`, backup before install, verify after.
@@ -355,7 +355,40 @@ Both of these were found the hard way and are cheap to re-introduce.
 
 | **Hard-deleting a range broke editing, invisibly.** The edit form rebuilt sessions with `getRanges().clear()` under `all-delete-orphan`, which DELETEs rows that `chu_generated_block` references. The database refused, but the violation surfaced during the *end-of-request* flush — after the controller's try/catch had returned — so the page rendered normally and the user's edit vanished with no error. It only manifested once a template had actually generated something. | Map the set `cascade="all"`, void ranges instead of deleting, and `Context.flushSession()` inside the service call so constraint violations reach the caller. |
 
+| **Hard-deleting a range broke editing, invisibly.** See §13 entry above; the same class of fault as the XML one — a failure raised where nobody is listening. | Cascade `all`, void instead of delete, flush inside the service call. |
+| **A scheduled task registered without a start time does nothing when started.** No error, no log line; pressing Start in the scheduler simply has no effect. Cost two attempts to diagnose. | Always `setStartTime()` on a `TaskDefinition`. The activator now sets the next 02:00. |
+| **`07:00` in the database is an `08:00` clinic.** MySQL stores UTC, the app renders `Africa/Algiers`. Hand-made blocks show the same offset, so a "wrong" time in a raw query is usually correct. | Verify times through the app or REST, never by reading the raw column. |
+
 **Readiness check after a restart:** `/openmrs/` returns 200 while modules are still
 loading. The honest signal is
 `/openmrs/referenceapplication/login.page` returning **200**; until then a working module
 will still 404.
+
+
+---
+
+## 14. Implementation notes (2026-09-16)
+
+Built as `chuschedules` 1.0.0; module source and its own README live in `chuschedules/`.
+
+**Open item 1 resolved.** Both rotation shapes were required. Implemented as a per-range
+rule rather than an extension of the weekday grid, exactly as §10 warned would be necessary:
+`WEEKLY` (weekday + interval + anchor) and `MONTHLY_NTH` (weekday + position 1–4 or last).
+The anchor is normalised onto the range's weekday, which removes any week-start convention
+from the cycle arithmetic.
+
+**Open item 2 resolved.** Horizon is tomorrow to one year ahead; a single run is capped at
+366 days and the nightly task's horizon is the global property
+`chuschedules.rollingHorizonDays` (default 365).
+
+**Open items 3 and 4 remain open:** which existing role holds `Manage Recurring Schedules`,
+and whether provider-leave exclusions need to reach anything beyond generation.
+
+**Verified end to end on the deployed instance**, not only in tests: a template generated
+blocks, the blocks were returned by the booking search, and a real appointment was booked
+against one. Editing that template then voided 88 future empty blocks, kept the booked one,
+and regeneration refused its date as `OVERLAPS_EXISTING`, naming the block.
+
+**41 unit tests** cover the recurrence rules, the occurrence planner and the report
+grouping. `refreshFutureBlocks` is the one piece without automated coverage — it needs a
+live `AppointmentService` — and was verified against the running instance instead.

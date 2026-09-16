@@ -10,6 +10,13 @@ public final class ChuSchedulesConstants {
 	
 	public static final String MODULE_ID = "chuschedules";
 	
+	/** How far ahead the nightly task keeps the calendar filled. */
+	public static final String GP_ROLLING_HORIZON_DAYS = "chuschedules.rollingHorizonDays";
+	
+	public static final int DEFAULT_ROLLING_HORIZON_DAYS = 365;
+	
+	public static final String TASK_NAME = "CHU Recurring Schedules - génération glissante";
+	
 	private ChuSchedulesConstants() {
 	}
 }

@@ -99,6 +99,7 @@ prompt while OHIF does not.
 ```
 openmrs-orthanc-integration/
 ├── custom-imaging-openmrs/          # the customised OpenMRS imaging module (1.2.0)
+├── chuschedules/                    # recurring provider schedules module (1.0.0) — see its README
 ├── backup files/                    # timestamped backups of config files
 ├── module-backups/                  # timestamped backups of module source
 ├── openmrs-docker-compose.yml       # OpenMRS + MySQL
@@ -109,6 +110,7 @@ openmrs-orthanc-integration/
 ├── .env                             # secrets not committed (MEDREPORT_RGS_TOKEN)
 ├── OHIF-Integration-Architecture.md # OHIF chain: TLS, routing, authentication
 ├── HANDOFF-2026-08-30.md            # outstanding work, prioritised, with rollbacks
+├── Recurring-Schedules-Design.md    # design + traps for the chuschedules module
 ├── CLAUDE.md                        # working guidelines + project-specific hazards
 └── README.md
 ```
