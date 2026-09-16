@@ -18,7 +18,10 @@ import org.openmrs.module.appointmentscheduling.api.AppointmentService;
 import org.openmrs.module.chuschedules.RecurrenceType;
 import org.openmrs.module.chuschedules.ScheduleTemplate;
 import org.openmrs.module.chuschedules.ScheduleTemplateRange;
+import org.openmrs.api.context.Context;
 import org.openmrs.module.chuschedules.api.ChuSchedulesService;
+import org.openmrs.module.chuschedules.api.impl.ChuSchedulesServiceImpl;
+import org.openmrs.module.chuschedules.generator.RefreshReport;
 import org.openmrs.ui.framework.annotation.SpringBean;
 import org.openmrs.ui.framework.page.PageModel;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -38,7 +41,7 @@ public class EditSchedulePageController {
 		ScheduleTemplate template = templateId == null ? null : service.getTemplate(templateId);
 		model.addAttribute("template", template);
 		model.addAttribute("ranges", template == null ? new ArrayList<ScheduleTemplateRange>()
-		        : new ArrayList<ScheduleTemplateRange>(template.getRanges()));
+		        : new ArrayList<ScheduleTemplateRange>(ChuSchedulesServiceImpl.activeRanges(template)));
 		addReferenceData(model, providerService, locationService, appointmentService);
 		model.addAttribute("error", null);
 	}
@@ -72,15 +75,39 @@ public class EditSchedulePageController {
 			}
 			template.setTypes(types);
 			
-			// Sessions are rebuilt wholesale from the form. Editing a template changes what
-			// FUTURE generation produces; blocks already generated are deliberately left
-			// standing, because patients may already be booked into them.
-			template.getRanges().clear();
-			for (ScheduleTemplateRange range : parseRanges(request)) {
-				template.addRange(range);
+			List<ScheduleTemplateRange> submitted = parseRanges(request);
+			
+			// Only disturb the schedule if the pattern genuinely changed. Without this, saving
+			// the form after correcting a typo in the name would void and regenerate every
+			// future clinic -- a rename must not move anybody's appointments.
+			boolean patternChanged = templateId == null
+			        || !signature(ChuSchedulesServiceImpl.activeRanges(template)).equals(signature(submitted));
+			
+			if (patternChanged) {
+				// Void the old sessions rather than deleting them: chu_generated_block
+				// references them as the provenance of everything already generated, and the
+				// database rightly refuses to delete a referenced row.
+				for (ScheduleTemplateRange existing : ChuSchedulesServiceImpl.activeRanges(template)) {
+					existing.setVoided(true);
+					existing.setVoidReason(VOID_REASON);
+					existing.setDateVoided(new java.util.Date());
+					existing.setVoidedBy(Context.getAuthenticatedUser());
+				}
+				for (ScheduleTemplateRange range : submitted) {
+					template.addRange(range);
+				}
 			}
 			
 			service.saveTemplate(template);
+			
+			if (patternChanged && templateId != null) {
+				// The old pattern's future clinics no longer match the template. Clear the
+				// empty ones so they can be regenerated at the new hours; booked ones stay put
+				// and are reported, because only a human can move a patient.
+				RefreshReport refresh = service.refreshFutureBlocks(template, VOID_REASON);
+				return "redirect:chuschedules/manageSchedules.page?voided=" + refresh.getVoidedCount() + "&kept="
+				        + refresh.getKeptBookedCount();
+			}
 			return "redirect:chuschedules/manageSchedules.page";
 		}
 		catch (Exception e) {
@@ -96,6 +123,23 @@ public class EditSchedulePageController {
 	 * Reads the weekday grid back off the form. A row is ignored entirely when its times are blank,
 	 * so a user can leave spare rows empty rather than having to delete them.
 	 */
+	private static final String VOID_REASON = "Horaire récurrent modifié";
+	
+	/**
+	 * A comparable fingerprint of a weekly pattern, used only to answer "did anything about the
+	 * sessions actually change?". Order-independent, so reordering rows is correctly treated as no
+	 * change.
+	 */
+	private static String signature(List<ScheduleTemplateRange> ranges) {
+		List<String> parts = new ArrayList<String>();
+		for (ScheduleTemplateRange r : ranges) {
+			parts.add(r.getDayOfWeek() + "|" + r.getStartTime() + "|" + r.getEndTime() + "|" + r.getRecurrenceType() + "|"
+			        + r.getWeekInterval() + "|" + r.getMonthOrdinal());
+		}
+		java.util.Collections.sort(parts);
+		return parts.toString();
+	}
+	
 	private List<ScheduleTemplateRange> parseRanges(HttpServletRequest request) {
 		List<ScheduleTemplateRange> ranges = new ArrayList<ScheduleTemplateRange>();
 		String[] days = request.getParameterValues("rangeDayOfWeek");

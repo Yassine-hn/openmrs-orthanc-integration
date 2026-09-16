@@ -11,6 +11,22 @@
         tranches de rendez-vous correspondantes jusqu'à un an à l'avance.
     </p>
 
+    <% if (voided != null) { %>
+        <div class="chu-report ${ kept > 0 ? 'chu-dryrun' : 'chu-written' }">
+            <strong>Horaire modifié.</strong>
+            <div>
+                ${ voided } tranche(s) future(s) vide(s) supprimée(s) &mdash; relancez
+                <em>Générer</em> pour les recréer aux nouveaux horaires.
+                <% if (kept > 0) { %>
+                    <br/>
+                    <strong>${ kept } tranche(s) future(s) conservée(s)</strong> car des
+                    rendez-vous y sont déjà pris. Elles gardent les anciens horaires :
+                    contactez ces patients avant de les modifier.
+                <% } %>
+            </div>
+        </div>
+    <% } %>
+
     <p>
         <a class="button confirm" href="${ ui.pageLink('chuschedules', 'editSchedule') }">Nouvel horaire</a>
         <a class="button" href="${ ui.pageLink('chuschedules', 'exceptions') }">Jours fériés et congés</a>

@@ -11,6 +11,7 @@ import org.openmrs.module.chuschedules.api.ChuSchedulesService;
 import org.openmrs.module.chuschedules.web.SchedulePatternFormatter;
 import org.openmrs.ui.framework.annotation.SpringBean;
 import org.openmrs.ui.framework.page.PageModel;
+import org.springframework.web.bind.annotation.RequestParam;
 
 /**
  * The landing page: every template, its pattern in words, and how far ahead each has already been
@@ -20,7 +21,14 @@ import org.openmrs.ui.framework.page.PageModel;
  */
 public class ManageSchedulesPageController {
 	
-	public void controller(PageModel model, @SpringBean("chuSchedulesService") ChuSchedulesService service) {
+	public void controller(PageModel model, @SpringBean("chuSchedulesService") ChuSchedulesService service,
+	        @RequestParam(value = "voided", required = false) Integer voided,
+	        @RequestParam(value = "kept", required = false) Integer kept) {
+		
+		// Set only after an edit that changed the pattern, so the user is told what happened
+		// to the clinics that were already generated under the old one.
+		model.addAttribute("voided", voided);
+		model.addAttribute("kept", kept);
 		
 		List<ScheduleTemplate> templates = service.getAllTemplates(false);
 		

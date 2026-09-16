@@ -295,10 +295,16 @@ Deployment follows the existing protocol: one change at a time, `.omod` archived
 - **Per-day granularity, not per-week.** "Every other Tuesday" and "first Monday of the
   month" are not expressible. If rotating on-call schedules need that, it is a
   recurrence-rule field, not an extension of the weekday grid — say so before phase 1.
-- **Templates do not retro-adjust.** Editing a template does not rewrite blocks already
-  generated; it changes what future generation produces, and the report names the
-  future generated-and-empty blocks it voided. Changing next week's clinic hours after
-  patients are booked stays a human decision.
+- **Editing a template re-synchronises the future, never the past.** *(Implemented
+  2026-09-16.)* Changing the pattern voids the **future, generated, empty** blocks of the
+  old pattern so they can be regenerated at the new hours, and reports how many. Blocks
+  with live appointments are left standing at the old times and reported separately, for
+  a human to resolve with the patient — regeneration then refuses those dates as
+  `OVERLAPS_EXISTING`, naming the block. Past blocks are never touched. Editing only the
+  name or validity dates changes nothing about the schedule: the pattern is fingerprinted
+  and compared, so a rename cannot move anybody's appointment.
+- **Ranges are voided, never deleted.** `chu_generated_block` references them as the
+  provenance of everything generated. See §13.
 - **No capacity model.** Booking capacity remains the upstream rule (time left in the
   slot versus service duration). Templates set *when* a clinic is open, not how many
   patients fit.
@@ -346,6 +352,8 @@ Both of these were found the hard way and are cheap to re-introduce.
 | --- | --- |
 | **A `--` inside an XML comment in `webModuleApplicationContext.xml` took the whole application UI down.** Spring refreshes *every* module's web context together, so one malformed file stops the entire OpenMRS web layer, not just this module — the login page 404s and the app looks dead. Neither Maven nor the omod packaging parses these files. | Run `chuschedules/validate-xml.sh` before every deploy. It parses every XML file in the module. |
 | **Calendar dates mapped as `java.util.Date` land on the wrong day.** The app JVM runs `Africa/Algiers` (UTC+1) while the MySQL container runs UTC, so binding a date as a *timestamp* turns local midnight into 23:00 the previous day, and a `DATE` column silently keeps the earlier day. A template saved as valid from 1 Sept was stored as 31 Aug. | Map calendar dates as Hibernate `type="date"` (binds `java.sql.Date`, timezone-free). Only genuine instants — the audit columns — stay timestamps. |
+
+| **Hard-deleting a range broke editing, invisibly.** The edit form rebuilt sessions with `getRanges().clear()` under `all-delete-orphan`, which DELETEs rows that `chu_generated_block` references. The database refused, but the violation surfaced during the *end-of-request* flush — after the controller's try/catch had returned — so the page rendered normally and the user's edit vanished with no error. It only manifested once a template had actually generated something. | Map the set `cascade="all"`, void ranges instead of deleting, and `Context.flushSession()` inside the service call so constraint violations reach the caller. |
 
 **Readiness check after a restart:** `/openmrs/` returns 200 while modules are still
 loading. The honest signal is

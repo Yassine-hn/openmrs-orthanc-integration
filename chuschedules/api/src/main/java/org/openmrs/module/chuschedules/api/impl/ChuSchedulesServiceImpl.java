@@ -20,6 +20,7 @@ import org.openmrs.api.impl.BaseOpenmrsService;
 import org.openmrs.module.appointmentscheduling.AppointmentBlock;
 import org.openmrs.module.appointmentscheduling.AppointmentType;
 import org.openmrs.module.appointmentscheduling.TimeSlot;
+import org.openmrs.module.appointmentscheduling.Appointment;
 import org.openmrs.module.appointmentscheduling.api.AppointmentService;
 import org.openmrs.module.chuschedules.GeneratedBlock;
 import org.openmrs.module.chuschedules.ScheduleException;
@@ -30,6 +31,7 @@ import org.openmrs.module.chuschedules.api.db.ChuSchedulesDAO;
 import org.openmrs.module.chuschedules.generator.GenerationReport;
 import org.openmrs.module.chuschedules.generator.OccurrencePlanner;
 import org.openmrs.module.chuschedules.generator.PlannedOccurrence;
+import org.openmrs.module.chuschedules.generator.RefreshReport;
 import org.openmrs.module.chuschedules.generator.RangeDate;
 import org.openmrs.module.chuschedules.generator.SkipReason;
 
@@ -54,7 +56,12 @@ public class ChuSchedulesServiceImpl extends BaseOpenmrsService implements ChuSc
 	@Override
 	public ScheduleTemplate saveTemplate(ScheduleTemplate template) {
 		validate(template);
-		return dao.saveTemplate(template);
+		ScheduleTemplate saved = dao.saveTemplate(template);
+		// Flush now, not at request end. A database constraint violation raised during the
+		// end-of-request flush reaches no one: the page has already rendered and the user
+		// sees a normal screen with their edit silently discarded.
+		Context.flushSession();
+		return saved;
 	}
 	
 	@Override
@@ -98,10 +105,10 @@ public class ChuSchedulesServiceImpl extends BaseOpenmrsService implements ChuSc
 		if (template.getValidTo() != null && template.getValidTo().before(template.getValidFrom())) {
 			throw new APIException("The schedule ends before it starts");
 		}
-		if (template.getRanges() == null || template.getRanges().isEmpty()) {
+		if (activeRanges(template).isEmpty()) {
 			throw new APIException("A recurring schedule needs at least one weekly or monthly session");
 		}
-		for (ScheduleTemplateRange range : template.getRanges()) {
+		for (ScheduleTemplateRange range : activeRanges(template)) {
 			if (range.getDayOfWeek() == null || range.getDayOfWeek() < 1 || range.getDayOfWeek() > 7) {
 				throw new APIException("Each session needs a day of the week");
 			}
@@ -112,6 +119,19 @@ public class ChuSchedulesServiceImpl extends BaseOpenmrsService implements ChuSc
 				throw new APIException("A session ends at or before it starts");
 			}
 		}
+	}
+	
+	/** Voided ranges are history, not schedule: they must not be validated or generated from. */
+	public static List<ScheduleTemplateRange> activeRanges(ScheduleTemplate template) {
+		List<ScheduleTemplateRange> live = new java.util.ArrayList<ScheduleTemplateRange>();
+		if (template.getRanges() != null) {
+			for (ScheduleTemplateRange r : template.getRanges()) {
+				if (!Boolean.TRUE.equals(r.getVoided())) {
+					live.add(r);
+				}
+			}
+		}
+		return live;
 	}
 	
 	// --- exceptions ---
@@ -154,6 +174,66 @@ public class ChuSchedulesServiceImpl extends BaseOpenmrsService implements ChuSc
 	@Override
 	public List<GeneratedBlock> getGeneratedBlocks(ScheduleTemplate template, Date from, Date to) {
 		return dao.getGeneratedBlocks(template, from, to);
+	}
+	
+	// --- re-synchronising after a pattern change ---
+	
+	@Override
+	public RefreshReport refreshFutureBlocks(ScheduleTemplate template, String reason) {
+		if (template == null) {
+			throw new APIException("Nothing to refresh");
+		}
+		RefreshReport report = new RefreshReport();
+		AppointmentService appointmentService = Context.getService(AppointmentService.class);
+		
+		// Strictly future. Today's clinic may already be running and the past is a record.
+		Date tomorrow = java.sql.Date.valueOf(LocalDate.now().plusDays(1));
+		
+		for (GeneratedBlock record : dao.getGeneratedBlocks(template, tomorrow, null)) {
+			AppointmentBlock block = appointmentService.getAppointmentBlockByUuid(record.getBlockUuid());
+			
+			if (block == null || Boolean.TRUE.equals(block.getVoided())) {
+				// Someone removed it by hand. Expected: drop our stale provenance row so the
+				// date is free to generate again.
+				voidRecord(record, reason);
+				report.recordAlreadyGone();
+				continue;
+			}
+			
+			if (hasLiveAppointments(appointmentService, block)) {
+				// The line we do not cross. Leave it standing, at the old hours, and report it.
+				report.recordKeptBooked(toLocalDate(record.getTargetDate()));
+				continue;
+			}
+			
+			for (TimeSlot slot : appointmentService.getTimeSlotsInAppointmentBlock(block)) {
+				appointmentService.voidTimeSlot(slot, reason);
+			}
+			appointmentService.voidAppointmentBlock(block, reason);
+			voidRecord(record, reason);
+			report.recordVoided(toLocalDate(record.getTargetDate()));
+		}
+		
+		log.info("chuschedules " + report + " for template " + template.getId());
+		return report;
+	}
+	
+	private boolean hasLiveAppointments(AppointmentService appointmentService, AppointmentBlock block) {
+		for (TimeSlot slot : appointmentService.getTimeSlotsInAppointmentBlock(block)) {
+			List<Appointment> appointments = appointmentService.getAppointmentsInTimeSlotThatAreNotCancelled(slot);
+			if (appointments != null && !appointments.isEmpty()) {
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	private void voidRecord(GeneratedBlock record, String reason) {
+		record.setVoided(true);
+		record.setVoidReason(reason);
+		record.setDateVoided(new Date());
+		record.setVoidedBy(Context.getAuthenticatedUser());
+		dao.saveGeneratedBlock(record);
 	}
 	
 	// --- generation ---

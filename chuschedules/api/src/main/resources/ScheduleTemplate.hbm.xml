@@ -22,7 +22,14 @@
         <many-to-one name="provider" class="org.openmrs.Provider" column="provider_id" not-null="true"/>
         <many-to-one name="location" class="org.openmrs.Location" column="location_id" not-null="true"/>
 
-        <set name="ranges" table="chu_schedule_template_range" inverse="true" cascade="all-delete-orphan"
+        <!--
+            cascade is "all", NOT "all-delete-orphan". Removing a range must never DELETE
+            its row: chu_generated_block references it, and the database rightly refuses,
+            which previously made editing a template that had generated anything fail at
+            commit time with no error reaching the user. Ranges are voided instead, which
+            also keeps the provenance of blocks already generated from them.
+        -->
+        <set name="ranges" table="chu_schedule_template_range" inverse="true" cascade="all"
              lazy="false" order-by="day_of_week, start_time">
             <key column="template_id" not-null="true"/>
             <one-to-many class="ScheduleTemplateRange"/>
