@@ -12,3 +12,7 @@ insert.py
 
 # Maven build output
 **/target/
+
+# personal, machine-local Claude overrides — never shared
+CLAUDE.local.md
+.claude/settings.local.json

@@ -3,7 +3,11 @@
 Recurring weekly and monthly provider schedules for OpenMRS, generated into ordinary
 appointment blocks.
 
-**Status:** deployed and working on the CHU Blida development instance. Phases 1–3 built.
+**Status:** phases 1–3 built, deployed and working on the CHU Blida instance. The system is
+destined for clinical use but is currently in a development phase: the appointment services,
+locations and providers it points at are still the stock OpenMRS demo records, so nothing
+generated so far is clinically meaningful. Treat writes with the care the rest of this repo
+demands (see `../CLAUDE.md`).
 See [`../Recurring-Schedules-Design.md`](../Recurring-Schedules-Design.md) for the design
 and the reasoning behind it.
 
@@ -82,8 +86,9 @@ schedule creates the few days that newly came within the horizon and skips the r
 
 ## Guarantees
 
-Each of these has unit tests, and each exists because the alternative is dangerous in a
-hospital:
+**54 unit tests** cover these, split across the recurrence rules (19), the occurrence
+planner (16), the refresh decision (13) and the report grouping (6). Each guarantee exists
+because the alternative is dangerous in a hospital:
 
 | Invariant | Why |
 | --- | --- |

@@ -1,7 +1,7 @@
 # Recurring provider schedules — design
 
 **Project:** openmrs-orthanc-integration — Neurosurgery EMR, CHU Blida
-**Status:** **phases 1, 2 and 3 built and deployed 2026-09-16** as `chuschedules` 1.0.0
+**Status:** **phases 1, 2 and 3 built and deployed 2026-09-16/17** as `chuschedules` 1.0.0
 (source in `chuschedules/`, artifacts in `module-backups/chuschedules/`). The §2 facts were
 re-verified against the deployed binaries on 2026-09-16 and still hold; they were also
 checked against `appointmentscheduling`/`appointmentschedulingui` **2.0.0**, which add no

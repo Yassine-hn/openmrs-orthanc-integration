@@ -82,6 +82,9 @@ prompt while OHIF does not.
 - **HTTPS everywhere** via Nginx Proxy Manager with a private CA certificate.
 - **No credentials in the browser** — Orthanc authentication is injected server-side.
 - **DICOM worklist** support, so modalities can query scheduled procedures.
+- **Recurring provider schedules** (`chuschedules` 1.0.0) — define a clinic's weekly or
+  monthly pattern once and generate appointment blocks from it, instead of entering one
+  block per provider per day by hand.
 
 ## Prerequisites
 
@@ -183,6 +186,16 @@ cd custom-imaging-openmrs && mvn clean package -DskipTests
 ```
 
 The artifact lands at `omod/target/imaging-1.2.0.omod`.
+
+- the recurring-schedules module — build it from `chuschedules/`:
+
+```bash
+cd chuschedules && ./validate-xml.sh && mvn clean package
+```
+
+The artifact lands at `omod/target/chuschedules-1.0.0.omod`. **Run `validate-xml.sh`
+first**: a malformed XML file in any module brings down the whole OpenMRS web context, not
+just that module. See [`chuschedules/README.md`](chuschedules/README.md).
 
 ### 6. Configure
 
