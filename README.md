@@ -247,6 +247,37 @@ A **global property**, at **Administration → Maintenance → Settings → Imag
 ```
 imaging.ohifBaseUrl = https://viewer.hospital.lan
 ```
+imaging.ohifBaseUrl = https://viewer.hospital.lan
+```
+
+No trailing slash and no surrounding whitespace. **When empty, the OHIF button does not
+render** — deliberate, so the module degrades cleanly where OHIF is not deployed. Set it
+through the UI, not by SQL: OpenMRS caches global properties in memory, and a direct
+`UPDATE` leaves the running application serving the old value.
+
+This is a global property, **not** a field on the Orthanc configuration page.
+
+### Nginx Proxy Manager
+
+Web UI at `http://<server-ip>:81`. Create one proxy host per hostname, always targeting
+**internal** ports (see the table in
+[Architecture at a glance](#architecture-at-a-glance)).
+
+Host 3 (`viewer.hospital.lan`) additionally needs two **Custom Locations**, `/dicom-web`
+and `/wado`, both forwarding to `orthanc-cors-proxy` port `80`. That is what makes OHIF
+same-origin with its data. Full rationale in
+[`OHIF-Integration-Architecture.md`](OHIF-Integration-Architecture.md).
+
+> **Certificates:** `hospital.lan` is an internal domain, so **Let's Encrypt cannot issue
+> for it** — do not attempt the automated flow. This deployment uses a certificate signed
+> by the hospital's own CA, uploaded to NPM as a Custom Certificate (`npm-3`), covering
+> `openmrs.hospital.lan`, `orthanc.hospital.lan` and `viewer.hospital.lan`, valid to 2036.
+
+### DNS
+
+`*.hospital.lan` must resolve to the server's LAN address **on client machines**. The
+server itself uses an external resolver and cannot resolve these names — that is expected,
+does not affect the containers, and should not be "fixed".
 
 No trailing slash and no surrounding whitespace. **When empty, the OHIF button does not
 render** — deliberate, so the module degrades cleanly where OHIF is not deployed. Set it
