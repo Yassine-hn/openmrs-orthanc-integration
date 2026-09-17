@@ -31,6 +31,8 @@ import org.openmrs.module.chuschedules.api.db.ChuSchedulesDAO;
 import org.openmrs.module.chuschedules.generator.GenerationReport;
 import org.openmrs.module.chuschedules.generator.OccurrencePlanner;
 import org.openmrs.module.chuschedules.generator.PlannedOccurrence;
+import org.openmrs.module.chuschedules.generator.RefreshDecision;
+import org.openmrs.module.chuschedules.generator.RefreshPlanner;
 import org.openmrs.module.chuschedules.generator.RefreshReport;
 import org.openmrs.module.chuschedules.generator.RangeDate;
 import org.openmrs.module.chuschedules.generator.SkipReason;
@@ -189,29 +191,37 @@ public class ChuSchedulesServiceImpl extends BaseOpenmrsService implements ChuSc
 		// Strictly future. Today's clinic may already be running and the past is a record.
 		Date tomorrow = java.sql.Date.valueOf(LocalDate.now().plusDays(1));
 		
+		LocalDate today = LocalDate.now();
+		
 		for (GeneratedBlock record : dao.getGeneratedBlocks(template, tomorrow, null)) {
 			AppointmentBlock block = appointmentService.getAppointmentBlockByUuid(record.getBlockUuid());
+			LocalDate targetDate = toLocalDate(record.getTargetDate());
 			
-			if (block == null || Boolean.TRUE.equals(block.getVoided())) {
-				// Someone removed it by hand. Expected: drop our stale provenance row so the
-				// date is free to generate again.
-				voidRecord(record, reason);
-				report.recordAlreadyGone();
-				continue;
-			}
+			// Gather the facts, then let the pure rule decide. The decision table is unit
+			// tested exhaustively in RefreshPlannerTest; this loop only carries it out.
+			RefreshDecision decision = RefreshPlanner.decide(targetDate, today, block != null,
+			    block != null && Boolean.TRUE.equals(block.getVoided()),
+			    block != null && hasLiveAppointments(appointmentService, block));
 			
-			if (hasLiveAppointments(appointmentService, block)) {
-				// The line we do not cross. Leave it standing, at the old hours, and report it.
-				report.recordKeptBooked(toLocalDate(record.getTargetDate()));
-				continue;
+			switch (decision) {
+				case LEAVE_PAST:
+					break;
+				case ALREADY_GONE:
+					voidRecord(record, reason);
+					report.recordAlreadyGone();
+					break;
+				case KEEP_BOOKED:
+					report.recordKeptBooked(targetDate);
+					break;
+				case VOID:
+					for (TimeSlot slot : appointmentService.getTimeSlotsInAppointmentBlock(block)) {
+						appointmentService.voidTimeSlot(slot, reason);
+					}
+					appointmentService.voidAppointmentBlock(block, reason);
+					voidRecord(record, reason);
+					report.recordVoided(targetDate);
+					break;
 			}
-			
-			for (TimeSlot slot : appointmentService.getTimeSlotsInAppointmentBlock(block)) {
-				appointmentService.voidTimeSlot(slot, reason);
-			}
-			appointmentService.voidAppointmentBlock(block, reason);
-			voidRecord(record, reason);
-			report.recordVoided(toLocalDate(record.getTargetDate()));
 		}
 		
 		log.info("chuschedules " + report + " for template " + template.getId());

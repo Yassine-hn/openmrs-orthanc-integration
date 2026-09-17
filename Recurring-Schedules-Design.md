@@ -389,6 +389,14 @@ blocks, the blocks were returned by the booking search, and a real appointment w
 against one. Editing that template then voided 88 future empty blocks, kept the booked one,
 and regeneration refused its date as `OVERLAPS_EXISTING`, naming the block.
 
-**41 unit tests** cover the recurrence rules, the occurrence planner and the report
-grouping. `refreshFutureBlocks` is the one piece without automated coverage — it needs a
-live `AppointmentService` — and was verified against the running instance instead.
+**54 unit tests** cover the recurrence rules, the occurrence planner, the report grouping
+and the refresh decision.
+
+A context-sensitive integration test for `refreshFutureBlocks` was attempted on 2026-09-17
+and deliberately abandoned: the OpenMRS test context loads every
+`moduleApplicationContext.xml` on the classpath, so depending on `appointmentscheduling-api`
+dragged in reporting → calculation → serialization.xstream, three modules deep and still
+climbing, to reach a forty-line method. The decision was extracted into the pure
+`RefreshPlanner` instead and tested exhaustively — the same split already used for
+generation. The remaining uncovered code is the thin adapter that fetches a block by uuid
+and voids it. See `chuschedules/README.md` for the full reasoning.

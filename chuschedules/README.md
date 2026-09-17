@@ -141,11 +141,46 @@ Each of these cost real time. They are cheap to re-introduce.
 
 ## Known gaps
 
-- **`refreshFutureBlocks` has no automated test.** It needs a live `AppointmentService`, so
-  it was verified against the running instance instead. It will not catch its own
-  regression; that needs an OpenMRS integration test with an in-memory database.
+- **No OpenMRS context-sensitive (integration) test.** One was attempted and abandoned;
+  see below. The decision logic it would have covered is now pure and unit tested
+  (`RefreshPlanner`, 13 tests); what remains uncovered is the thin adapter around it —
+  the service calls that fetch a block by uuid and void it.
 - **No capacity model.** Booking capacity remains the upstream rule (time left in the slot
   versus service duration). Templates set *when* a clinic is open, not how many patients fit.
 - **Lunar holidays are data, not an algorithm.** Eid moves each year and must be entered.
 - **An `appointmentscheduling` upgrade could change the block/slot contract.** §2 of the
   design doc is the thing to re-verify.
+
+
+## Why there is no context-sensitive test
+
+An `OpenMRS BaseModuleContextSensitiveTest` for `refreshFutureBlocks` was attempted on
+2026-09-17 and abandoned deliberately.
+
+The harness itself is available and the test boots — but the OpenMRS test context loads
+**every `moduleApplicationContext.xml` on the classpath**, and this module compiles against
+`appointmentscheduling-api`, whose context wires reporting beans. Satisfying them cascaded:
+
+```
+appointmentscheduling-api  →  needs reporting-api
+reporting-api              →  needs calculation-api
+calculation-api            →  needs serialization.xstream
+                           →  ... and onward
+```
+
+Three modules deep to reach a forty-line method, with no end in sight. The resulting test
+would have been slow, and brittle in the worst way: failing on version drift in modules this
+one does not use, for reasons unrelated to the rule under test. That is a test that gets
+disabled the first time it goes red.
+
+Instead the decision was extracted into `RefreshPlanner.decide(...)` — pure, no context, no
+clock — and tested exhaustively, including every combination of (block exists, block voided,
+has appointments) against past and future dates. That is the same split already used for
+generation (`OccurrencePlanner`), and it covers the part where a wrong answer would delete a
+clinic a patient is booked into.
+
+**If a context-sensitive test is ever wanted**, the tractable route is not to assemble the
+module graph but to test against a real running instance — which is how every behaviour in
+this module has in fact been verified, including this one: editing a template with 89
+generated blocks, one of them booked, reports `voided=88 kept=1` and leaves the booked
+appointment untouched.
