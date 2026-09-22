@@ -77,14 +77,21 @@ failure. See `README.md` and `OHIF-Integration-Architecture.md` for the system i
 - `custom-imaging-openmrs/` — OpenMRS↔Orthanc imaging module (was a git submodule, now a
   plain directory; see the Git section below).
 - `neuro-patientview/` — patient-view module, its own git repo.
+- `chuschedules/` — recurring provider schedules (`Horaires récurrents`). Generates
+  appointment blocks from weekly/monthly templates. Its `README.md` and
+  `Recurring-Schedules-Design.md` carry the traps; **run `chuschedules/validate-xml.sh`
+  before deploying it** — a malformed XML file in a module takes down the whole OpenMRS web
+  context, not just that module.
 - `modules/` — other OpenMRS custom modules built/maintained alongside this project:
   - `agentgateway/` — current source (`omod`/`api`), plus `agentgateway-module-backups/`
     for its built `.omod` history.
   - `Medreport-module/`, `openmrs-module-spa/`, `chublidatheme-omod-1.0.2.omod`.
 - `services/clinical-agent-service/` — standalone FastAPI service (OpenMRS client, NLU,
   agent orchestration) that talks to this stack over the Docker network.
-- `patches/`, `module-backups/`, `backup files/` — patch history and timestamped backups
-  (see "Git — reads only" below for why backups live here instead of in git).
+- `patches/`, `module-backups/`, `backup files/` — patch history and timestamped backups.
+  These **are** tracked in git as of `d64d3d5`, including the `.omod` binaries under
+  `patches/`. Archive only the build that matches what is deployed; intermediate builds from
+  a working session are churn and should not be committed.
 - `*-docker-compose.yml`, `ohif-app-config.js`, `orthanc-cors-proxy.conf` — the running
   stack's config; `openmrs-docker-compose.yml` binds an absolute host path
   (`/home/server/openmrs-persistent/java/cacerts`), so that directory must stay put.
@@ -115,10 +122,11 @@ The maintainer is a domain expert, **not an infrastructure specialist**. For eve
 1. `openmrs-module-imaging` **was a submodule**, removed and replaced by the plain
    directory `custom-imaging-openmrs/`. A routine `git submodule update` could destroy
    that directory or resurrect the old pointer.
-2. **The operational config is not in git.** `origin/main` holds only a README and the old
-   submodule pointer. `git checkout <file>` is **not** a rollback path.
+2. **Much of the operational config is not in git**, and `main` lags the working tree. Check
+   `git ls-files <path>` before assuming a file is recoverable; `git checkout <file>` is
+   **not** a reliable rollback path for anything untracked.
 
-**Back up with timestamped copies instead**, into `backup files/`:
+**Back up with timestamped copies as well**, into `backup files/`:
 
 ```bash
 cp <file> "backup files/$(basename <file>).bak-$(date +%Y%m%d-%H%M%S)"
