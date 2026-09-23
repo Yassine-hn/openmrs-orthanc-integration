@@ -2,8 +2,11 @@
 
 **Project:** openmrs-orthanc-integration — Neurosurgery EMR, CHU Blida
 **Upstream:** [CCI-Bonn/OHIF-AI](https://github.com/CCI-Bonn/OHIF-AI) (Apache 2.0)
-**Status:** **PLANNING / NOT DEPLOYED.** Nothing in this document has been built or run yet.
-Section 4 (hardware survey) is *measured*; everything else is *designed*.
+**Status (2026-09-22):** **NOT DEPLOYED — evaluation in progress.** Phases 1 and 2 are
+built and verified on Server 2 (images, checkpoints, GPU capability); phase 3, the first
+step that stops a running service, has not been scheduled. Sections 4, 5.2 and 5.3 are
+*measured*; sections 1, 3, 6 and 8 are *designed* and not yet proven. Server 1 is
+untouched throughout.
 **Applies to:** OHIF-AI `main` as of 2026-09-17, MONAI Label fork, OHIF `3.10.4`
 
 > **Read the status line above before acting on anything here.** This project's
@@ -26,8 +29,8 @@ We are **adding it as a second, independent viewer**, not replacing the current 
 | --- | --- | --- |
 | URL | `https://viewer.hospital.lan` | `https://ai-viewer.hospital.lan` |
 | Image | `ohif/app:v3.9.2` (prebuilt) | built from the OHIF-AI fork (OHIF 3.10.4) |
-| Runs on | Server 1 (`10.0.211.249`) | Server 2 (`10.0.211.250`) |
-| Needs a GPU | no | **yes** |
+| Runs on | Server 1 (`10.0.211.249`) | viewer on Server 1; MONAI backend on Server 2 (`10.0.211.250`) — see §3 |
+| Needs a GPU | no | **the backend does**; the viewer is static files |
 | Purpose | routine reading, MPR, volume rendering | segmentation, volumetry, draft reports |
 | Changed by this work | **nothing at all** | — |
 
@@ -112,35 +115,52 @@ The browser must see **one origin** for the AI viewer. Splitting the viewer and 
 DICOMweb across two origins reintroduces CORS preflights and breaks the server-side
 Basic Auth injection that stops Orthanc prompting for a password.
 
-So Server 2's own nginx — already part of the upstream recipe, already routing
-`/monai/` — fronts everything:
+**Only the MONAI backend needs the GPU. The viewer is static files.** So the viewer
+stays on Server 1 beside Orthanc, and exactly one API route crosses to Server 2:
 
 ```
 browser
-  └── https://ai-viewer.hospital.lan            NPM on Server 1, TLS terminated here
-        └── 10.0.211.250:1026                   OHIF-AI nginx on Server 2
-              ├── /            → static OHIF-AI viewer   (local)
-              ├── /monai/      → monai_server:8002       (Docker network, never on the LAN)
-              ├── /dicom-web/  → 10.0.211.249:8043       (orthanc-cors-proxy → orthanc:8042)
-              └── /wado/       → 10.0.211.249:8043       (same)
+  └── https://ai-viewer.hospital.lan        NPM on Server 1, TLS terminated here
+        ├── /            → ohif-ai-viewer:80        Server 1, static bundles
+        ├── /dicom-web/  → orthanc-cors-proxy:80    Server 1, unchanged, injects Basic auth
+        ├── /wado/       → orthanc-cors-proxy:80    Server 1, unchanged
+        └── /monai/      → Server 2, monai_server:8002 behind server2-proxy (TLS + IP allowlist)
 ```
 
 Consequences, each deliberate:
 
 - **One origin in the browser.** No CORS, no preflight, no credentials in any JS file.
+- **The imaging path never leaves Server 1.** DICOM does not traverse Server 2 at all.
 - **`orthanc-cors-proxy` keeps doing the auth injection**, exactly as it does for the
   current viewer. Orthanc still answers only authenticated requests, and the browser
   never sees a password prompt.
-- **The MONAI API is never published on the hospital LAN.** It is reachable only from
-  inside Server 2's Docker network, through the viewer's own origin.
-- **Server 2 publishes exactly one new port (1026)**, and only NPM on Server 1 needs to
-  reach it.
+- **The MONAI API is never published on the hospital LAN.** On Server 2 it is reached
+  through `server2-proxy` using that stack's documented pattern — an overlay plus a vhost
+  template, `expose:` and never `ports:`.
+- **Server 1 gains one small nginx container** (`webapp:latest`, 373 MB) beside the
+  existing `ohif-viewer`. No GPU is needed to serve static files.
+
+### 3.1 Why not host the viewer on Server 2 — a decision already made
+
+An earlier draft of this section put the whole OHIF-AI stack on Server 2 and proxied
+DICOMweb back to Server 1. **That is the shape `server2-stack/README.md` explicitly
+rejected on 2026-08-18**, under "Why there is no viewer here":
+
+> the viewer belongs on **Server 1**, next to Orthanc. […] Putting the viewer on the GPU
+> host would mean either widening those CORS rules or proxying DICOM through Server 2,
+> and both add a moving part to the imaging path in exchange for nothing.
+
+The reasoning still holds, and the layout above honours it. What changed is only the
+"in exchange for nothing" clause: OHIF-AI buys GPU-backed segmentation, which the plain
+viewer removed in August did not. But that purchase is made by `monai_server`, not by the
+frontend — so there is no reason for the imaging path to move. Splitting the two gets the
+GPU without touching what August protected.
 
 > **Test the finished viewer in a private/incognito window.** Seeing images after typing
 > a password is a **failure**, not a pass — it means the auth-injection proxy was
 > bypassed. This is a standing rule for this stack.
 
-### 3.1 Body size limits
+### 3.2 Body size limits
 
 Saving a DICOM SEG is a large upload. Three places must allow it:
 
@@ -337,6 +357,23 @@ VLLM_BASE_URL=http://vllm:8000/v1
 …and `monai_server` must be attached to the **external** network `server2_net`. This is
 exactly what `services/clinical-agent-service/app/config.py:79` already does.
 
+What that endpoint actually serves, measured 2026-09-22:
+
+| | |
+| --- | --- |
+| Served model name | **`medgemma-4b-it`** — this is the string report requests must use |
+| Weights | `/models/medgemma-4b-it`, quantised **fp8** on the fly by vLLM |
+| Context | `--max-model-len 4096` |
+| VRAM | `--gpu-memory-utilization 0.50` ≈ 8.15 GB; the STT engine takes 0.25 ≈ 4.08 GB |
+
+Two things follow. First, a **4096-token context** is small for a radiology report
+prompt that carries instructions, a slice range and a query — if report generation
+truncates, that limit is the first thing to check, and raising it costs KV cache on an
+already-full card. Second, `~/models/` on Server 2 also holds
+`medgemma-1.5-4b-it-variant-C-fp8`, which is **not** what vLLM is currently serving; if
+the intent is to draft reports with MedGemma 1.5, that is a separate change to
+`server2-stack/docker-compose.vllm.yml`, not to anything here.
+
 ### 6.3 One GPU, modern passthrough
 
 `CUDA_VISIBLE_DEVICES=0` (not `0,1`); drop `runtime: nvidia`, keep the `deploy` device
@@ -389,8 +426,30 @@ there is nothing to restore.
 
 | Decision | Status |
 | --- | --- |
-| Which segmentation models are "ours", and their interaction shape (§2.1) | **open** — decides whether the swap is a day or a project |
+| Which segmentation models are "ours", and their interaction shape (§2.1) | **open, and the premise is in doubt** — see §9.1 |
 | GPU window for phase 3 | **granted** 2026-09-22, timing to be agreed with Server 2's desk user |
 | Real vs anonymised test studies (§5.1) | **open** — deferred until after phase 3 |
 | Labelling convention for AI-generated segmentations | **open** — needed before phase 4 |
 | Whether report drafts are ever stored in OpenMRS | **open** — out of scope for evaluation |
+
+### 9.1 "Our own segmentation models" — searched for, not found
+
+The original goal was to keep OHIF-AI's frontend but substitute our own segmentation
+models for nnInteractive / SAM2 / MedSAM2 / VoxTell. A search on 2026-09-22 found **no
+segmentation model anywhere in this system**:
+
+| Searched | Result |
+| --- | --- |
+| `openmrs-orthanc-integration/` and `report-generation-service/` — `*.py`, `*.java`, `*.yml`, `*.md` for `nnunet`, `totalsegmentator`, `monai`, `onnx`, `*.pth` | nothing. Every occurrence of "segmentation" refers to **OHIF's manual brush tool** and saving the result as DICOM SEG. |
+| Server 2 — `/home/cerist`, `/opt`, `/srv` for `*.pt`, `*.pth`, `*.onnx`, `*.safetensors`, `*nnunet*` | only `medgemma-4b-it` and `medgemma-1.5-4b-it-variant-C-fp8` — both language/vision-language models, neither a segmentation model. |
+| Hugging Face cache on Server 2 | empty. |
+
+So there is presently nothing to substitute. Unless models exist somewhere this search
+could not reach — a collaborator's machine, a partner institution, or models not yet
+trained — **the simplest path is to use OHIF-AI's four models as shipped.** They are
+already integrated, already have a working UI, and nnInteractive already implements the
+multi-user session-lease protocol that any replacement would otherwise have to
+reimplement (§2.1).
+
+This does not block anything. Phase 3 evaluates the shipped models; substitution, if it
+ever happens, is a later and separate piece of work.
