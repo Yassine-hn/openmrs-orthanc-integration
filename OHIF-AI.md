@@ -539,8 +539,35 @@ total          : 298 / 4096
 ```
 
 So **one 512×512 slice costs roughly 256 tokens**. With `max_tokens=1536` reserved for the
-report, about 2,500 tokens remain for the prompt — **nine or ten slices at most.** A report
-over a wider slice range will fail on context, not on quality.
+report, about 2,500 tokens remain for the prompt — **nine or ten slices at most.**
+
+This is not theoretical. Measured against the running model, 2026-09-23:
+
+| Slices | Prompt tokens | Result |
+| --- | --- | --- |
+| 1 | 279 | OK |
+| 4 | 1 056 | OK |
+| 6 | 1 574 | OK |
+| 8 | 2 092 | OK |
+| 10 | 2 610 | OK |
+| 43 (the whole series) | 11 157 | **400** |
+
+```
+The decoder prompt (length 11157) is longer than the maximum model length of 4096.
+```
+
+**This is the second HTTP 500 and its whole explanation.** The report panel takes a start
+and an end slice; leaving **End Slice empty sends the entire series**. On a 43-slice CT that
+is 11,157 tokens against a 4,096-token context. Nothing is misconfigured — the range simply
+has to be bounded.
+
+> **Operationally: always set both Start Slice and End Slice, spanning ten slices or fewer.**
+> Pick the range that covers the lesion. A user who leaves the end blank gets an opaque 500,
+> which is a usability failure in the upstream panel rather than a fault in this deployment.
+
+Two things this rules out, both tested rather than assumed: `chat_template_kwargs`
+(`enable_thinking`) is accepted by vLLM with thinking on *or* off, and the `top_k` extra
+body is fine. Neither causes the 400.
 
 Raising it is a decision for `server2-stack`, not for this evaluation, and it is not free:
 at `--gpu-memory-utilization 0.50` the KV cache measures 9,072 tokens total, shared across
