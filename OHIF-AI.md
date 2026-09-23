@@ -2,11 +2,11 @@
 
 **Project:** openmrs-orthanc-integration — Neurosurgery EMR, CHU Blida
 **Upstream:** [CCI-Bonn/OHIF-AI](https://github.com/CCI-Bonn/OHIF-AI) (Apache 2.0)
-**Status (2026-09-22):** **NOT DEPLOYED — evaluation in progress.** Phases 1 and 2 are
-built and verified on Server 2 (images, checkpoints, GPU capability); phase 3, the first
-step that stops a running service, has not been scheduled. Sections 4, 5.2 and 5.3 are
-*measured*; sections 1, 3, 6 and 8 are *designed* and not yet proven. Server 1 is
-untouched throughout.
+**Status (2026-09-23):** **NOT DEPLOYED — evaluation running on Server 2.** Phases 1–3 are
+done and **phase 3 passed**: nnInteractive produced a valid DICOM SEG and a volumetry
+report from a real study (§5.2). Phase 4 is wired and the model path is proven, but the
+browser round-trip is not (§10.4). Sections 4, 5.2, 5.3 and 10 are *measured*; sections 1,
+3, 6 and 8 are *designed* and not yet proven. **Server 1 has been untouched throughout.**
 **Applies to:** OHIF-AI `main` as of 2026-09-17, MONAI Label fork, OHIF `3.10.4`
 
 > **Read the status line above before acting on anything here.** This project's
@@ -273,6 +273,37 @@ Facts only, dated. A line appears here when something has been *done*, not plann
 | 2026-09-22 | `docker compose build monai_server` | **VERIFIED** — `monai:latest`, **23.6 GB** |
 | 2026-09-22 | `docker compose build ohif_viewer` | **VERIFIED** — `webapp:latest`, 373 MB; 213 MB of bundles present in the image |
 | 2026-09-22 | GPU capability probe (`torch.cuda`, sm_120, matmul) | **VERIFIED** — §7; ~400 MB VRAM used and fully released, no service stopped |
+| 2026-09-23 | vLLM switched to `medgemma-1.5-4b-it` | **VERIFIED** — `eval_nlu` UNSAFE = 0, 27/28; 7582 MiB. Two checkpoint repairs needed; see `server2-stack/README.md` on Server 2 |
+| 2026-09-23 | **Phase 3 — GPU window opened.** `vllm` + `stt-engine` stopped | **VERIFIED** — 15023 MiB free (was 3640) |
+| 2026-09-23 | OHIF-AI stack up (`PACS`, `ohif_viewer`, `monai_server`) | **VERIFIED** — nnInteractive loaded and cuDNN-warmed; 2649 MiB GPU |
+| 2026-09-23 | Sample study loaded into the bundled Orthanc | **VERIFIED** — 43 instances, `HCC_001`, CT-C/A/P W/WO CON |
+| 2026-09-23 | Viewer routes | **VERIFIED** — `/` 200 html, `/pacs/dicom-web/studies` 200 (1 study), `/monai/info/` 200 |
+| 2026-09-23 | **Interactive segmentation in a browser** | **VERIFIED — PHASE 3 PASSED.** 4 positive clicks, `nninter_core_elapsed 0.140s`. Output is a valid DICOM SEG (`SOPClassUID 1.2.840.10008.5.1.4.1.1.66.4`, 512×512×7, segment `nninter_pred_20260923131611`) correctly referencing the source series, plus a volumetry CSV: **155.47 cm³**, 50 943 voxels, mean 26.7 HU |
+| 2026-09-23 | Saving a segmentation **back into the PACS** | **NOT VERIFIED** — the SEG was downloaded to disk; the bundled Orthanc still holds only the CT series. The store path matters for the target design (§1.1) and still needs exercising |
+| 2026-09-23 | Phase 4 — report generation wiring | **VERIFIED to the model**, not through the browser — §10 |
+| 2026-09-23 | `vllm` + `stt-engine` restarted; GPU window closed | **VERIFIED** — both healthy; §10.5 shows the window need not have been exclusive |
+
+A caveat on the volumetry above, for a clinician rather than an engineer: HU ranged −496 to
+178 with skewness −4.4 and kurtosis 28.9, so a small tail of fat- or air-density voxels sits
+inside the mask. The bulk (median 36 HU) is liver-like. Whether the margin matters is a
+clinical judgement, not a technical failure.
+
+Two deviations were required to get the stack up, both in the eval clone only:
+
+- **`CUDA_VISIBLE_DEVICES=0,1` → `0`.** One GPU here (§4.2).
+- **Orthanc would not start:** the `jodogne/orthanc-plugins` image ships *both*
+  `/etc/orthanc/orthanc.json` and `/etc/orthanc/advanced.json`. The recipe's bind-mount
+  replaces only the first, and recent Orthanc **refuses a configuration section defined in
+  two files** — it died on `DicomAssociationCloseDelay`, one of eleven overlapping keys.
+  Fixed by masking `advanced.json` with `{}` via a second bind-mount; every value in it is
+  a tuning default Orthanc also holds internally. Fixing keys one at a time would not have
+  worked.
+
+Also found, and worth reporting upstream: **`start.sh`'s `-y` / `LOAD_*` eager-loading is
+inert.** The script `export`s `LOAD_SAM2` and friends, but `docker-compose.yml` never
+declares them, so they never reach the container. `basic_infer.py` defaults to `lazy`, so
+the optional models stay off the GPU regardless of the flag — which is what we wanted, but
+not what the flag claims to do.
 
 Notes on the above:
 
@@ -453,3 +484,106 @@ reimplement (§2.1).
 
 This does not block anything. Phase 3 evaluates the shipped models; substitution, if it
 ever happens, is a later and separate piece of work.
+
+---
+
+## 10. Phase 4 — report generation against our own MedGemma
+
+**Status: wired and verified as far as it can be without a browser (2026-09-23).** The model,
+the transport and the token budget are proven; the OHIF toolbox round-trip is not yet.
+
+Your first attempt returned **HTTP 500**. It was not a vLLM connection problem, and four
+independent defects sat between the viewer and the model. Each is recorded because each
+would otherwise be rediscovered the hard way.
+
+### 10.1 The four problems
+
+| # | What was wrong | Evidence | Fix |
+| --- | --- | --- | --- |
+| 1 | The toolbox has **two separate operations**: `medGemma` loads MedGemma *inside* the MONAI container from Hugging Face; `vllm` calls an OpenAI-compatible server. The first was used. | `huggingface_hub.errors.GatedRepoError: 401 … You are trying to access a gated repo` — `google/medgemma-*` is gated and `HF_TOKEN` is deliberately empty (§6.5) | Use the **`vllm`** operation. Nothing to change; the local path stays unusable by design, and that is correct — patient imaging must not depend on a Hugging Face download. |
+| 2 | The viewer **always sends `vllm_base_url`**, defaulting to `http://host.docker.internal:8000/v1`, and the backend prefers the request value over the environment. Setting `VLLM_BASE_URL` alone does nothing. | `commandsModule.ts` builds `vllm_base_url: baseUrl`; `toolboxState.ts:69` held the default; `basic_infer.py:2164` reads `data.get("vllm_base_url")` first | Toolbox default changed to `http://vllm:8000/v1` and the viewer rebuilt. `VLLM_BASE_URL` is also set, for any caller that omits the field. |
+| 3 | `vllm_max_tokens` defaults to **8192**, and the `vllm` op never sends it. vLLM rejects `prompt + max_tokens > context`, and ours is **4096**. | `basic_infer.py`; measured `GPU KV cache size: 9,072 tokens` — so even `--max-model-len 8192` could not have absorbed it | Backend default → **1536**. A radiology report is a few hundred tokens; 8192 was never reachable. |
+| 4 | `OpenAI(api_key="", …)` **always raises** on the installed SDK. The vLLM path could not construct a client at all, whatever the configuration. | `openai 3.17.0`, `_client.py:274`: `not self.api_key` → `OpenAIError: Missing credentials` | `api_key=os.environ.get("VLLM_API_KEY") or "EMPTY"`. vLLM ignores the value unless started with `--api-key`, and a real key can now be supplied if it ever is. |
+
+Problems 3 and 4 are **upstream bugs**, not environment mismatches: #4 breaks the vLLM path
+for every user on a modern SDK, and #3 breaks it for any server with a context under
+~9k tokens. Both are worth reporting to CCI-Bonn, along with the inert `start.sh -y`
+noted in §5.2.
+
+### 10.2 How the backend reaches vLLM
+
+`monai_server` joins Server 2's own stack network. Note the second entry:
+
+```yaml
+    networks:
+      - default        # MUST stay: naming any network replaces the implicit
+      - server2_net    # default, where orthanc and ohif_viewer live
+```
+
+Verified after the change: `monai → vllm` lists `['medgemma-1.5-4b-it']`, and
+`monai → orthanc` still returns HTTP 200. Losing the second is the obvious way to get this
+wrong, so it is checked explicitly.
+
+vLLM is **not** published on the host — `host.docker.internal` cannot reach it, and it must
+not be exposed on the LAN to make it so.
+
+### 10.3 The token budget, measured
+
+A synthetic 512×512 slice sent through the real path:
+
+```
+model          : medgemma-1.5-4b-it
+prompt_tokens  : 276      (one image + a one-line instruction)
+completion     : 22
+total          : 298 / 4096
+```
+
+So **one 512×512 slice costs roughly 256 tokens**. With `max_tokens=1536` reserved for the
+report, about 2,500 tokens remain for the prompt — **nine or ten slices at most.** A report
+over a wider slice range will fail on context, not on quality.
+
+Raising it is a decision for `server2-stack`, not for this evaluation, and it is not free:
+at `--gpu-memory-utilization 0.50` the KV cache measures 9,072 tokens total, shared across
+`--max-num-seqs 8`. Raising `--max-model-len` buys prompt room and costs concurrency.
+
+### 10.4 What is proven, and what is not
+
+**Proven:** MedGemma 1.5 answers a vision+text request through `http://vllm:8000/v1` from
+inside `monai_server`, within budget, returning sensible text about the image it was shown.
+The transport, the model, the network and the token arithmetic all work.
+
+**Not proven:** the OHIF toolbox round-trip — a real study, a real instruction, a real
+slice range, through the `vllm` operation. That needs a browser.
+
+### 10.5 VRAM — read this before testing
+
+With vLLM, the STT engine and nnInteractive all resident:
+
+```
+13998 MiB used | 1823 MiB free
+  vllm 7718 | stt-engine 3668 | nnInteractive 1882 | desktop ~233
+```
+
+**Report generation is safe** — it reuses the already-resident vLLM. **Loading another
+segmentation model is not.** SAM2, MedSAM2 and VoxTell are lazy (§4.1) and will try to
+allocate on first use; 1.8 GB is unlikely to be enough, and **text-prompt segmentation is
+VoxTell**, not the report path — an easy confusion given both take text.
+
+To exercise those, free memory first: `docker stop stt-engine` returns 3.6 GB, at the cost
+of dictation.
+
+This also corrects an assumption in §4.1: the GPU window does **not** have to be exclusive.
+nnInteractive costs under 2 GB and coexists with both engines comfortably. Only the
+SAM-family and VoxTell need the room.
+
+### 10.6 Reverting
+
+Everything in phase 4 is inside `~/ohif-ai-eval`, backed up with `.bak-<timestamp>` and
+`.bak2-<timestamp>` suffixes beside each file. Production was not modified: `vllm` and
+`stt-engine` were stopped and restarted, nothing in `server2-stack` was edited.
+
+The backend patches are applied by **bind-mounting** the single patched
+`basic_infer.py` over the image's copy, rather than rebuilding 23.6 GB. Removing the mount
+restores upstream behaviour — at which point the vLLM path breaks again on #4.
+**Any rebuild of the `monai` image must carry these patches forward**, or they will be
+silently lost while the mount keeps them looking present.
