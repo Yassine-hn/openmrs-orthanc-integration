@@ -7,7 +7,8 @@ proven.** Phase 3 passed: nnInteractive produced a valid DICOM SEG and a volumet
 from a real study (§5.2). Phase 4 passed: MedGemma 1.5 drafted a report from eight slices
 of that study through the real backend (§10.8). Sections 4, 5.2, 5.3, 10 and 11 are
 *measured*; sections 1, 3, 6 and 8 are *designed* and not yet proven — in particular
-**nothing is deployed and saving a segmentation back to the PACS is still unverified**.
+**nothing is deployed**. Segmentations were confirmed to round-trip into the PACS (§5.2),
+which is the premise the side-by-side design rests on.
 **Server 1 has been untouched throughout.**
 **Applies to:** OHIF-AI `main` as of 2026-09-17, MONAI Label fork, OHIF `3.10.4`
 
@@ -271,7 +272,7 @@ Facts only, dated. A line appears here when something has been *done*, not plann
 | 2026-09-22 | Cloned to `/home/cerist/ohif-ai-eval` on Server 2, `--depth 1`, HEAD `78d0101` (2026-09-17), 304 MB | **VERIFIED** |
 | 2026-09-22 | `cp .env-sample .env` — all API keys left empty (§6.5) | **VERIFIED** |
 | 2026-09-22 | `scripts/download_weights.sh` | **VERIFIED** — 298 MB: `sam2.1_hiera_tiny.pt`, `MedSAM2_latest.pt` |
-| 2026-09-22 | `from="10.0.211.249"` restriction on the automation key | **VERIFIED** — reconnected after the edit |
+| 2026-09-22 | Source-address restriction applied to the automation key (§5.3) | **VERIFIED** — reconnected after the edit |
 | 2026-09-22 | `docker compose build monai_server` | **VERIFIED** — `monai:latest`, **23.6 GB** |
 | 2026-09-22 | `docker compose build ohif_viewer` | **VERIFIED** — `webapp:latest`, 373 MB; 213 MB of bundles present in the image |
 | 2026-09-22 | GPU capability probe (`torch.cuda`, sm_120, matmul) | **VERIFIED** — §7; ~400 MB VRAM used and fully released, no service stopped |
@@ -281,7 +282,7 @@ Facts only, dated. A line appears here when something has been *done*, not plann
 | 2026-09-23 | Sample study loaded into the bundled Orthanc | **VERIFIED** — 43 instances, `HCC_001`, CT-C/A/P W/WO CON |
 | 2026-09-23 | Viewer routes | **VERIFIED** — `/` 200 html, `/pacs/dicom-web/studies` 200 (1 study), `/monai/info/` 200 |
 | 2026-09-23 | **Interactive segmentation in a browser** | **VERIFIED — PHASE 3 PASSED.** 4 positive clicks, `nninter_core_elapsed 0.140s`. Output is a valid DICOM SEG (`SOPClassUID 1.2.840.10008.5.1.4.1.1.66.4`, 512×512×7, segment `nninter_pred_20260923131611`) correctly referencing the source series, plus a volumetry CSV: **155.47 cm³**, 50 943 voxels, mean 26.7 HU |
-| 2026-09-23 | Saving a segmentation **back into the PACS** | **NOT VERIFIED** — the SEG was downloaded to disk; the bundled Orthanc still holds only the CT series. The store path matters for the target design (§1.1) and still needs exercising |
+| 2026-09-24 | Saving a segmentation **back into the PACS** | **VERIFIED.** Exported from the viewer as series `Test`: `Modality=SEG`, `SOPClassUID 1.2.840.10008.5.1.4.1.1.66.4`, 57 frames, **2 segments**, referencing the source CT series. It is in Orthanc beside the CT, not merely on disk |
 | 2026-09-23 | Phase 4 — report generation wiring | **VERIFIED to the model**, not through the browser — §10 |
 | 2026-09-23 | `vllm` + `stt-engine` restarted; GPU window closed | **VERIFIED** — both healthy; §10.5 shows the window need not have been exclusive |
 
@@ -334,33 +335,29 @@ Notes on the above:
 
 ### 5.3 Access between the servers
 
-Unattended commands run from Server 1 to Server 2 over a dedicated key:
+Commands run unattended from Server 1 to Server 2 over a dedicated SSH key, separate from
+the interactive one.
 
-```
-Server 1: ~/.ssh/id_ed25519_server2   →   Server 2: cerist@10.0.211.250
-```
+**The specifics are deliberately not in this file.** This repository is public (see the
+Secrets section of `CLAUDE.md`), and the key paths, account names and authorised-key
+restrictions are exactly the detail an attacker who reached Server 1 would want. They are
+on the machines, readable by anyone with legitimate access.
 
-A separate key exists because Server 1's interactive key `id_rsa` is
-passphrase-protected and the only agent available is **gnome-keyring**, which needs a
-graphical prompt to sign. In a headless session it answers `agent refused operation`, so
-that key cannot be used for automation. The dedicated key has **no passphrase**.
+What a reader needs to know here:
 
-**Mitigation — applied 2026-09-22, VERIFIED.** That key's line in Server 2's
-`~/.ssh/authorized_keys` is prefixed with `from="10.0.211.249"`, so it is accepted only
-from Server 1. Presented from any other address it is refused, passphrase or not.
+- The automation key is **separate** from the interactive key, and is used only for
+  Server 1 → Server 2 commands.
+- It is **restricted by source address** in Server 2's `authorized_keys`, so it is refused
+  from anywhere but Server 1.
+- The interactive key is passphrase-protected and is deliberately left unrestricted; the
+  source-address restriction exists specifically because the automation key is not.
+- A timestamped backup was taken before that file was edited, and password authentication
+  remains enabled on Server 2, so the change could not have locked anyone out.
 
-```
-from="10.0.211.249" ssh-ed25519 AAAA... server1-automation
-```
+> Why a second key at all: the interactive key is passphrase-protected and the only agent
+> available is gnome-keyring, which needs a graphical prompt to sign. In a headless
+> session it answers `agent refused operation`, so that key cannot drive automation.
 
-The interactive `ssh-rsa` key on line 1 is deliberately **left unrestricted**: it is
-passphrase-protected, so it does not carry the same exposure, and restricting it would
-break its use from anywhere other than Server 1. The restriction exists specifically
-because the automation key has no passphrase.
-
-A timestamped backup was taken before the edit
-(`~/.ssh/authorized_keys.bak-<timestamp>` on Server 2). Password authentication remains
-enabled on Server 2, so a mistake here could not have locked anyone out.
 
 ---
 
