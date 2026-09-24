@@ -2,6 +2,12 @@
 
 Applied: 2026-09-01. Target: `openmrs-app` (openmrs/openmrs-reference-application-distro), OpenMRS 2.4.3.
 
+> **Superseded for deployment on 2026-09-24** by `../adminui-provider-retire-fix/`. Its omod
+> is this build plus one JS fix, and it is what is deployed now. This folder stays as the
+> record of this fix and as the rollback target. Its `apply.sh` now refuses to run unless
+> `FORCE_OLD_ADMINUI=1` is set, because installing this omod would undo the provider fix.
+> This folder's `verify.sh` is still valid, and the newer patch's `verify.sh` runs it.
+
 ## Symptom
 
 Any user whose `user_property` table contains `forcePassword = true` (the "Force password

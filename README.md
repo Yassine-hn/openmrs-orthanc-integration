@@ -46,9 +46,9 @@ Eight containers on one Docker network, `openmrs-orthanc-integration_default`:
 
 | Container | Image | Host port | **Internal port** | Compose file |
 | --- | --- | --- | --- | --- |
-| `openmrs-app` | `openmrs/openmrs-reference-application-distro` | 8080 | 8080 | `openmrs-docker-compose.yml` |
+| `openmrs-app` | `openmrs/openmrs-reference-application-distro` (2.12.2, core 2.4.3, pinned by digest) | 8080 | 8080 | `openmrs-docker-compose.yml` |
 | `openmrs-mysql` | `mysql:8.0` | — | 3306 | `openmrs-docker-compose.yml` |
-| `orthanc-pacs` | `orthancteam/orthanc` | 4242, 8042 | 4242, 8042 | `orthanc-docker-compose.yml` |
+| `orthanc-pacs` | `orthancteam/orthanc` (26.04, pinned by digest 2026-09-24) | 4242, 8042 | 4242, 8042 | `orthanc-docker-compose.yml` |
 | `orthanc-postgres-db` | `postgres:13-alpine` | — | 5432 | `orthanc-docker-compose.yml` |
 | `ohif-viewer` | `ohif/app:v3.9.2` | 3000 | **80** | `ohif-docker-compose.yml` |
 | `orthanc-cors-proxy` | `nginx:alpine` | 8043 | **80** | `ohif-docker-compose.yml` |
@@ -103,6 +103,9 @@ prompt while OHIF does not.
 openmrs-orthanc-integration/
 ├── custom-imaging-openmrs/          # the customised OpenMRS imaging module (1.2.0)
 ├── chuschedules/                    # recurring provider schedules module (1.0.0) — see its README
+├── modules/                         # other custom OpenMRS modules (agentgateway, Medreport, spa, theme)
+├── services/                        # clinical-agent-service (FastAPI)
+├── patches/                         # fixes to third-party modules, each with README/apply/verify
 ├── backup files/                    # timestamped backups of config files
 ├── module-backups/                  # timestamped backups of module source
 ├── openmrs-docker-compose.yml       # OpenMRS + MySQL
@@ -114,6 +117,7 @@ openmrs-orthanc-integration/
 ├── OHIF-Integration-Architecture.md # OHIF chain: TLS, routing, authentication
 ├── HANDOFF-2026-08-30.md            # outstanding work, prioritised, with rollbacks
 ├── Recurring-Schedules-Design.md    # design + traps for the chuschedules module
+├── UAT-Issue-Log.md                 # problems found in UI use-case testing: evidence, cause, fix status
 ├── CLAUDE.md                        # working guidelines + project-specific hazards
 └── README.md
 ```
@@ -126,10 +130,12 @@ Related directories **outside** this repository:
 | `~/certificates/` | the hospital CA and the server certificate/key |
 | `~/report-generation-service/` | the `medreport-rgs` service |
 
-> **Almost none of the operational configuration is in git.** `origin/main` contains only
-> a README and an old submodule pointer. `ohif-app-config.js`, `orthanc-cors-proxy.conf`
-> and the compose files exist **only on this disk**, so `git checkout <file>` is *not* a
-> rollback path — use the timestamped copies in `backup files/`. See `CLAUDE.md`.
+> **Git is not a complete rollback path.** Since the chuschedules branch merged into `main`
+> (`de10eb5`), the compose files, `ohif-app-config.js`, `orthanc-cors-proxy.conf`,
+> `patches/` and the backup directories are tracked. But anything untracked (for example
+> `.env`, and the live state inside Docker volumes) exists **only on this disk**. Check
+> `git ls-files <path>` before relying on `git checkout <file>`, and keep making the
+> timestamped copies in `backup files/`. See `CLAUDE.md`.
 
 ## Getting Started
 
@@ -346,6 +352,7 @@ Add `--resolve viewer.hospital.lan:443:<server-ip>` to test before a DNS record 
 | --- | --- |
 | OpenMRS | `docker logs openmrs-app` |
 | What a browser actually requested | `~/nginx-proxy-manager/data/logs/proxy-host-<n>_access.log` |
+| What a browser requested from OpenMRS directly (`:8080`, bypassing NPM) | `docker exec openmrs-app cat /usr/local/tomcat/logs/localhost_access_log.<YYYY-MM-DD>.txt` |
 | Generated proxy configs | `~/nginx-proxy-manager/data/nginx/proxy_host/<n>.conf` |
 
 The NPM access log is the authoritative record when a viewer misbehaves — it shows each
@@ -362,6 +369,8 @@ request and its status, which separates a networking fault from a rendering one.
 | OHIF loads the study but shows no images | Client-side rendering. OHIF needs **WebGL2**. On a server with no GPU, recent Chrome disables the software fallback — launch with `--enable-unsafe-swiftshader`, or use a workstation with a GPU. |
 | Saving a segmentation fails | Body-size limit — resolved 2026-09-01 by setting `client_max_body_size 0;` in `orthanc-cors-proxy.conf`. If it recurs, re-check that directive is present and that `nginx -s reload` was run. |
 | Certificate warning in the browser | The hospital CA is not trusted on that client. Install `certificates/hospitalCA.crt`. |
+| **Gérer les comptes**: Provider **Retire / Restore / Save** → "Échec de l'enregistrement" (HTTP 400 on `providerTabContentPane/process.action`) | adminui 1.6.0 bug with AngularJS 1.5.8: the form-encoded body was sent labelled as JSON, so the server saw no parameters. **Patched 2026-09-24** (`patches/adminui-provider-retire-fix/`). If it recurs, run that folder's `verify.sh` and hard-refresh the browser. See `UAT-Issue-Log.md` #1. |
+| **Gérer les comptes** still counts a retired user/provider | By design. The counts include retired accounts. Open the account: retired ones are struck through with **Restore**. A retired user cannot log in. |
 | Random `500`s after the stack idles for days | Stale pooled DB connections. **2026-09-07:** `hibernate.c3p0.min_size=2` set in `openmrs-runtime.properties` (was 0, which let the pool shrink to nothing before its own 50-min idle test ever ran) — see `HANDOFF-2026-08-30.md` §4.1 for why the originally-planned fix wouldn't have worked in this Hibernate version, and note **this has not yet been observed to actually prevent a recurrence** over a real multi-day idle period. Meanwhile: `docker restart openmrs-app`. |
 
 ### Editing bind-mounted files — the inode trap

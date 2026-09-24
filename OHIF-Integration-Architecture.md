@@ -4,7 +4,7 @@
 **Server:** `server-PowerEdge-T140`, LAN `10.0.211.249` (`eno1`)
 **Status:** verified end to end on 2026-08-30 — imaging module **1.2.0** deployed and
 confirmed pruning stale studies; DICOMweb transport, TLS and auth injection all verified
-**Applies to:** imaging module **1.2.0**, OHIF `ohif/app:v3.9.2`, Orthanc `orthancteam/orthanc:latest`
+**Applies to:** imaging module **1.2.0**, OHIF `ohif/app:v3.9.2`, Orthanc `orthancteam/orthanc` 26.04 (pinned by digest since 2026-09-24; was `:latest`)
 
 This document is the authoritative description of the OHIF integration.
 

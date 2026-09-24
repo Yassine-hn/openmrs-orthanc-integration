@@ -153,6 +153,10 @@ Each of these cost real time. They are cheap to re-introduce.
 - **No capacity model.** Booking capacity remains the upstream rule (time left in the slot
   versus service duration). Templates set *when* a clinic is open, not how many patients fit.
 - **Lunar holidays are data, not an algorithm.** Eid moves each year and must be entered.
+- **A retired provider's templates keep generating.** Generation does not check
+  `provider.retired`, so a manual *Générer* or the nightly task would create bookable
+  blocks for a provider who has left. When offboarding a provider, deactivate their
+  templates as well. Found in UAT (`../UAT-Issue-Log.md` #1).
 - **An `appointmentscheduling` upgrade could change the block/slot contract.** §2 of the
   design doc is the thing to re-verify.
 

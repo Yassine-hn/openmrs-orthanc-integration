@@ -3,6 +3,14 @@
 # Needed only if the .OpenMRS volume is recreated or the module is replaced.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Superseded 2026-09-24: ../adminui-provider-retire-fix/ carries this fix AND the provider
+# retire fix in one omod. Installing this older omod would silently undo the latter.
+if [ "${FORCE_OLD_ADMINUI:-}" != "1" ]; then
+    echo "Superseded: run ../adminui-provider-retire-fix/apply.sh instead (it includes this fix)."
+    echo "To install this force-password-only build anyway: FORCE_OLD_ADMINUI=1 $0"
+    exit 1
+fi
 CONTAINER="${CONTAINER:-openmrs-app}"
 
 echo "==> installing patched adminui-1.6.0.omod into $CONTAINER (.OpenMRS volume)"

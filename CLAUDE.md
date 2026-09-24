@@ -122,9 +122,10 @@ The maintainer is a domain expert, **not an infrastructure specialist**. For eve
 1. `openmrs-module-imaging` **was a submodule**, removed and replaced by the plain
    directory `custom-imaging-openmrs/`. A routine `git submodule update` could destroy
    that directory or resurrect the old pointer.
-2. **Much of the operational config is not in git**, and `main` lags the working tree. Check
-   `git ls-files <path>` before assuming a file is recoverable; `git checkout <file>` is
-   **not** a reliable rollback path for anything untracked.
+2. **Not everything is in git.** The compose files, proxy/OHIF config and `patches/` are
+   tracked on `main` since `de10eb5`, but `.env`, Docker-volume state and anything new are
+   not. Check `git ls-files <path>` before assuming a file is recoverable;
+   `git checkout <file>` is **not** a rollback path for anything untracked.
 
 **Back up with timestamped copies as well**, into `backup files/`:
 
@@ -169,3 +170,9 @@ cp <file> "backup files/$(basename <file>).bak-$(date +%Y%m%d-%H%M%S)"
 actually made, with status codes. It is the authoritative evidence when a viewer
 misbehaves, and it distinguishes a networking fault from a client-side rendering one.
 Prefer it over inferring from what the browser appeared to do.
+
+Requests made to OpenMRS on `:8080` directly never pass through NPM. For those, the
+equivalent record is Tomcat's `/usr/local/tomcat/logs/localhost_access_log.<date>.txt`
+inside `openmrs-app`. Pair it with `docker logs openmrs-app`: `LoggingAdvice` logs every
+service `save*`/`retire*` call, so a request that never reached the service is visible by
+its absence (UAT #1 was diagnosed this way).
