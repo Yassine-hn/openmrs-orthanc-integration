@@ -2,11 +2,13 @@
 
 **Project:** openmrs-orthanc-integration — Neurosurgery EMR, CHU Blida
 **Upstream:** [CCI-Bonn/OHIF-AI](https://github.com/CCI-Bonn/OHIF-AI) (Apache 2.0)
-**Status (2026-09-23):** **NOT DEPLOYED — evaluation running on Server 2.** Phases 1–3 are
-done and **phase 3 passed**: nnInteractive produced a valid DICOM SEG and a volumetry
-report from a real study (§5.2). Phase 4 is wired and the model path is proven, but the
-browser round-trip is not (§10.4). Sections 4, 5.2, 5.3 and 10 are *measured*; sections 1,
-3, 6 and 8 are *designed* and not yet proven. **Server 1 has been untouched throughout.**
+**Status (2026-09-24):** **NOT DEPLOYED — evaluation complete on Server 2, both features
+proven.** Phase 3 passed: nnInteractive produced a valid DICOM SEG and a volumetry report
+from a real study (§5.2). Phase 4 passed: MedGemma 1.5 drafted a report from eight slices
+of that study through the real backend (§10.8). Sections 4, 5.2, 5.3, 10 and 11 are
+*measured*; sections 1, 3, 6 and 8 are *designed* and not yet proven — in particular
+**nothing is deployed and saving a segmentation back to the PACS is still unverified**.
+**Server 1 has been untouched throughout.**
 **Applies to:** OHIF-AI `main` as of 2026-09-17, MONAI Label fork, OHIF `3.10.4`
 
 > **Read the status line above before acting on anything here.** This project's
@@ -614,3 +616,124 @@ The backend patches are applied by **bind-mounting** the single patched
 restores upstream behaviour — at which point the vLLM path breaks again on #4.
 **Any rebuild of the `monai` image must carry these patches forward**, or they will be
 silently lost while the mount keeps them looking present.
+
+### 10.7 Making failures legible — three bugs, one symptom
+
+Every failure in this backend reached the browser as a bare **"Internal Server Error"**.
+That is not one bug but three, stacked:
+
+1. **`MONAILabelError` is an `Enum`, not an exception.** `basic_infer.py` does
+   `raise MONAILabelError("some message")` in **21 places**. Constructing an Enum from a
+   message raises `ValueError: '<the whole message>' is not a valid MONAILabelError`, so
+   the real diagnostic is destroyed at the moment it is raised. The correct form, already
+   imported in the same file and used correctly once, is
+   `MONAILabelException(MONAILabelError.<MEMBER>, msg)`. All 21 were fixed.
+2. **`endpoints/infer.py` never caught it.** `instance.infer(request)` was called bare, so
+   anything it raised became FastAPI's generic 500 with no body. It now catches
+   `MONAILabelException` and answers **HTTP 400 with `e.msg`**.
+3. **No range guard.** Added before the vLLM call — see below.
+
+The effect is that upstream's own diagnostics now work too. The "cannot connect to
+OpenAI-compatible API at …" message, for instance, was already written and had never once
+been seen by a user.
+
+**The guard.** It computes the budget from the server's advertised context rather than
+hard-coding it, so it stays correct if `--max-model-len` changes:
+
+```
+available = max_model_len - max_tokens - 256      # 256 reserved for instruction + query
+max_slices = available // 256                     # ~256 tokens per 512x512 slice
+```
+
+Verified against the live stack by replaying the exact request that failed:
+
+```
+POST /infer/segmentation … startSlice=1, no endSlice
+HTTP 400
+{"detail":"Slice range too wide for this model: 43 slices need roughly 11008 tokens,
+ but only about 2304 are free (context 4096, 1536 reserved for the report). Set BOTH
+ Start Slice and End Slice, spanning at most 9 slices - leaving End Slice empty sends
+ the whole series. Alternatively raise --max-model-len on the vLLM server."}
+```
+
+### 10.8 Phase 4 — VERIFIED end to end, 2026-09-24
+
+A bounded range through the real backend, on the real study, to the real model:
+
+```
+POST /infer/segmentation?image=<series>&output=dicom_seg
+     startSlice=20, endSlice=27, nninter=vllm
+HTTP 200  in 17.8 s
+
+  "The liver is enlarged and heterogeneous. A 3.2 x 2.2 cm lesion is present in the
+   right lobe of the liver."
+```
+
+That is MedGemma 1.5, served by your own vLLM, reading eight slices of the HCC_001 CT.
+**Report generation works.** §10.4's "not proven" is now discharged.
+
+Clinical quality is a separate question this document does not answer: one plausible
+report is not a validation, and the model appends its own disclaimer.
+
+---
+
+## 11. Incidents worth keeping
+
+### 11.1 A kernel update took the whole GPU stack down (2026-09-24)
+
+Server 2 rebooted and **every GPU container died**:
+
+```
+nvidia-container-cli: initialization error: nvml error: driver not loaded
+```
+
+The kernel had gone **7.0.0-31 → 7.0.0-34** and the NVIDIA module was never loaded for the
+new kernel. `nvidia-smi` failed, `lsmod` showed no nvidia modules, and `vllm`,
+`stt-engine`, `monai_server` and `ohif_viewer` were all down — so **the clinical
+assistant's language understanding and dictation were unavailable**, not merely the
+imaging evaluation.
+
+Not a driver-version problem: `linux-modules-nvidia-595-open-7.0.0-34-generic` was already
+installed, `nvidia.ko` was present for the running kernel, `modinfo` resolved it and
+nouveau was not loaded. It simply had not been loaded. Recovery, as root:
+
+```bash
+sudo depmod -a && sudo modprobe nvidia && sudo modprobe nvidia_uvm && nvidia-smi
+```
+
+Docker's restart policies then brought `vllm` and `stt-engine` back unaided.
+
+> **This will recur on every kernel update until the module autoloads at boot.** A
+> GPU host that silently loses its driver on reboot takes two clinical features with it.
+> Worth a `systemd-modules-load` entry or an equivalent, and worth knowing that
+> **unattended kernel upgrades on Server 2 are a clinical availability risk**, not just an
+> inconvenience.
+
+### 11.2 A one-word config error that would have taken vLLM down
+
+`server2-stack/docker-compose.vllm.yml` was edited to add `--disable-prefix-caching`.
+**That flag does not exist.** Verified against the real image:
+
+```
+$ docker run --rm --gpus all --entrypoint vllm vllm/vllm-openai:v0.11.0 serve <model> --disable-prefix-caching
+vllm: error: unrecognized arguments: --disable-prefix-caching
+```
+
+The correct spelling is **`--no-enable-prefix-caching`**, confirmed to parse. Corrected in
+place on 2026-09-24.
+
+Two things made this dangerous rather than merely wrong:
+
+- **The running container never had the flag.** `docker inspect vllm` showed the live
+  arguments without it, because the container had only been *restarted*, and a restart
+  reuses the existing configuration. Only `up -d` recreates. So the file claimed a
+  mitigation that was not in force — and the next `up -d` would have replaced a working
+  vLLM with one that refuses to start.
+- It sat in an **uncommitted** edit, so nothing recorded that the running state and the
+  file had diverged.
+
+**The mitigation is still not in force.** Prefix caching remains enabled on the running
+server. Whether to apply it is an open decision (§9): the `mm_hash` AssertionError it
+targets appears **once** in the entire log, while the HTTP 500s that prompted it are fully
+explained by the slice-range overflow of §10.3, which is now guarded. Applying it costs
+throughput and requires recreating the container.
